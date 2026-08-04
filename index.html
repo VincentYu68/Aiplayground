@@ -70,11 +70,47 @@
     <div id="bars"></div>
   </section>
 
+  <section id="translate" class="hidden">
+    <div class="tr-head">
+      <button id="dirBtn" class="chip" title="Swap direction">
+        <span id="dirLabel">EN → 中文</span> <span class="swap">⇄</span>
+      </button>
+      <span id="trStatus" class="tr-status">off</span>
+      <button id="trSettingsBtn" class="chip ghost" title="Translation settings">⚙</button>
+    </div>
+
+    <div id="trSettings" class="tr-settings hidden">
+      <div class="seg" id="engineSeg">
+        <button data-engine="local" class="active">On-device</button>
+        <button data-engine="cloud">Cloud</button>
+      </div>
+      <div id="cloudFields" class="cloud-fields hidden">
+        <select id="providerSel" aria-label="Cloud provider">
+          <option value="google">Google Translate</option>
+          <option value="openai">OpenAI</option>
+        </select>
+        <input id="apiKey" type="password" autocomplete="off" spellcheck="false"
+               placeholder="API key — stored on this device only">
+      </div>
+      <p class="fineprint" id="engineNote">
+        Runs on your phone. First use downloads a model of roughly 40–80&nbsp;MB.
+      </p>
+    </div>
+
+    <div class="tr-progress hidden" id="trProgress"><div id="trBar"></div></div>
+
+    <div class="tr-body">
+      <p id="srcText" class="src">Tap <strong>Talk</strong> and start speaking.</p>
+      <p id="dstText" class="dst"></p>
+    </div>
+  </section>
+
   <footer id="controls" class="hidden">
     <button id="flipBtn"   class="ctl" title="Switch camera"><span>🔄</span><small>Flip</small></button>
     <button id="personBtn" class="ctl active" title="Toggle person boxes"><span>🧍</span><small>People</small></button>
     <button id="meshBtn"   class="ctl" title="Toggle face mesh"><span>🕸️</span><small>Mesh</small></button>
     <button id="mirrorBtn" class="ctl active" title="Mirror preview"><span>🪞</span><small>Mirror</small></button>
+    <button id="talkBtn"   class="ctl" title="Live translation"><span>🎙️</span><small>Talk</small></button>
     <button id="stopBtn"   class="ctl danger" title="Stop camera"><span>⏹</span><small>Stop</small></button>
   </footer>
 

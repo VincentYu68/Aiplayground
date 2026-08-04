@@ -232,6 +232,127 @@ button.primary:active { transform: scale(0.97); filter: brightness(0.9); }
 }
 .bar-row .val { text-align: right; font-variant-numeric: tabular-nums; }
 
+/* ---------- translation panel ---------- */
+
+#translate {
+  flex: 0 0 auto;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+#translate.hidden { display: none; }
+
+/* When translating, the emotion bars collapse to make room; the headline
+   emotion stays visible in the readout above. */
+#readout.compact #bars { display: none; }
+#readout.compact { padding-bottom: 10px; }
+
+.tr-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.chip:active { filter: brightness(1.25); }
+.chip .swap { color: var(--muted); font-size: 12px; }
+.chip.ghost { background: transparent; color: var(--muted); padding: 6px 9px; }
+
+.tr-status {
+  flex: 1 1 auto;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
+.tr-status.listening { color: #34d67a; }
+.tr-status.working   { color: #ffc53d; }
+.tr-status.error     { color: var(--danger); }
+
+.tr-settings {
+  margin-bottom: 10px;
+  padding: 10px;
+  background: var(--panel-2);
+  border-radius: 10px;
+}
+.tr-settings.hidden { display: none; }
+
+.seg { display: flex; gap: 4px; }
+.seg button {
+  flex: 1 1 0;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.seg button.active { color: var(--text); background: var(--bg); border-color: var(--accent); }
+
+.cloud-fields { display: grid; gap: 6px; margin-top: 8px; }
+.cloud-fields.hidden { display: none; }
+.cloud-fields select,
+.cloud-fields input {
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.cloud-fields input::placeholder { color: #5d6478; }
+
+.tr-progress {
+  height: 4px;
+  margin-bottom: 8px;
+  background: var(--panel-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.tr-progress.hidden { display: none; }
+#trBar {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease-out;
+}
+
+.tr-body { min-height: 62px; }
+.tr-body p { margin: 0; }
+.tr-body .src {
+  font-size: 13px;
+  color: var(--muted);
+  min-height: 19px;
+}
+.tr-body .src.interim { font-style: italic; opacity: 0.72; }
+.tr-body .dst {
+  margin-top: 5px !important;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
 /* ---------- controls ---------- */
 
 #controls {
