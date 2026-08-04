@@ -1,0 +1,276 @@
+:root {
+  --bg: #0b0d12;
+  --panel: #141822;
+  --panel-2: #1c2130;
+  --line: #2a3142;
+  --text: #e8ecf4;
+  --muted: #8b93a7;
+  --accent: #4f8cff;
+  --danger: #ff5c6c;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  overscroll-behavior: none;
+}
+
+body { overflow: hidden; }
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  padding-top: var(--safe-t);
+  padding-bottom: var(--safe-b);
+}
+
+/* ---------- top bar ---------- */
+
+#topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand { display: flex; align-items: center; gap: 9px; }
+
+.brand h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: #39415a;
+  transition: background 0.25s;
+}
+.dot.live {
+  background: #34d67a;
+  box-shadow: 0 0 0 0 rgba(52, 214, 122, 0.6);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  70%  { box-shadow: 0 0 0 7px rgba(52, 214, 122, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 214, 122, 0); }
+}
+
+.stats {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- stage ---------- */
+
+#stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+#video, #overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 100%;
+  max-height: 100%;
+}
+
+#video { object-fit: contain; background: #000; }
+
+/* Selfie view. The overlay canvas is never CSS-flipped — it mirrors its own
+   coordinates instead, so that labels stay readable. */
+#video.mirrored { transform: translate(-50%, -50%) scaleX(-1); }
+#overlay { pointer-events: none; }
+
+/* ---------- panels (gate / loader / error) ---------- */
+
+.panel {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(11, 13, 18, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.panel.hidden { display: none; }
+
+.gate-inner {
+  width: 100%;
+  max-width: 340px;
+  text-align: center;
+}
+
+.gate-icon { font-size: 44px; line-height: 1; margin-bottom: 12px; }
+
+.gate-inner h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.gate-inner p {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.fineprint { font-size: 12px !important; margin: 14px 0 0 !important; opacity: 0.75; }
+
+button.primary {
+  width: 100%;
+  padding: 14px 20px;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 0.12s, filter 0.12s;
+}
+button.primary:active { transform: scale(0.97); filter: brightness(0.9); }
+
+/* ---------- loader ---------- */
+
+.spinner {
+  width: 34px; height: 34px;
+  margin: 0 auto 16px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.progress {
+  height: 6px;
+  background: var(--panel-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+#progressBar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease-out;
+}
+
+/* ---------- readout ---------- */
+
+#readout {
+  flex: 0 0 auto;
+  padding: 12px 16px 8px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+#readout.hidden { display: none; }
+
+.readout-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+#readoutLabel { font-size: 15px; font-weight: 650; text-transform: capitalize; }
+#readoutScore { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+#bars { display: grid; gap: 5px; }
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 68px 1fr 34px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.bar-row .name { text-transform: capitalize; }
+.bar-row .track {
+  height: 5px;
+  background: var(--panel-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.bar-row .fill {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  transition: width 0.14s linear;
+}
+.bar-row .val { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---------- controls ---------- */
+
+#controls {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-around;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+#controls.hidden { display: none; }
+
+.ctl {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 9px 4px;
+  font: inherit;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.ctl span { font-size: 19px; line-height: 1; }
+.ctl small { font-size: 10px; font-weight: 550; }
+.ctl:active { background: var(--panel-2); }
+.ctl.active { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+.ctl.danger { color: var(--danger); }
+
+/* ---------- landscape: put controls beside the stage ---------- */
+
+@media (orientation: landscape) and (max-height: 520px) {
+  #topbar { padding: 6px 14px; }
+  #readout { padding: 8px 14px 6px; }
+  #readout #bars { grid-template-columns: repeat(2, 1fr); display: grid; gap: 4px 14px; }
+  .ctl span { font-size: 16px; }
+}

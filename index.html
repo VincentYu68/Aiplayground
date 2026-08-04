@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#0b0d12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="description" content="On-device person detection and facial emotion annotation from your phone camera.">
+<title>Mood Cam — live person + emotion detection</title>
+<link rel="stylesheet" href="./css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🙂</text></svg>">
+</head>
+<body>
+
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">
+      <span class="dot" id="liveDot"></span>
+      <h1>Mood Cam</h1>
+    </div>
+    <div class="stats">
+      <span id="fps">-- fps</span>
+      <span id="faceCount">0 faces</span>
+    </div>
+  </header>
+
+  <main id="stage">
+    <video id="video" playsinline autoplay muted disablepictureinpicture></video>
+    <canvas id="overlay"></canvas>
+
+    <!-- Idle / start gate. iOS requires a user gesture before camera access. -->
+    <div id="gate" class="panel">
+      <div class="gate-inner">
+        <div class="gate-icon">🎥</div>
+        <h2>Live emotion camera</h2>
+        <p>Detects people in frame and labels each visible face with its emotion. Everything runs on your phone — no video is uploaded.</p>
+        <button id="startBtn" class="primary">Start camera</button>
+        <p class="fineprint">First run downloads about 20&nbsp;MB of models. Use Wi-Fi. It is cached afterwards.</p>
+      </div>
+    </div>
+
+    <!-- Loading progress -->
+    <div id="loader" class="panel hidden">
+      <div class="gate-inner">
+        <div class="spinner"></div>
+        <h2 id="loaderTitle">Loading…</h2>
+        <div class="progress"><div id="progressBar"></div></div>
+        <p id="loaderNote" class="fineprint">Preparing the vision runtime</p>
+      </div>
+    </div>
+
+    <!-- Error surface -->
+    <div id="errorPanel" class="panel hidden">
+      <div class="gate-inner">
+        <div class="gate-icon">⚠️</div>
+        <h2>Something went wrong</h2>
+        <p id="errorMsg"></p>
+        <button id="retryBtn" class="primary">Try again</button>
+      </div>
+    </div>
+  </main>
+
+  <section id="readout" class="hidden">
+    <div class="readout-head">
+      <span id="readoutLabel">No face detected</span>
+      <span id="readoutScore"></span>
+    </div>
+    <div id="bars"></div>
+  </section>
+
+  <footer id="controls" class="hidden">
+    <button id="flipBtn"   class="ctl" title="Switch camera"><span>🔄</span><small>Flip</small></button>
+    <button id="personBtn" class="ctl active" title="Toggle person boxes"><span>🧍</span><small>People</small></button>
+    <button id="meshBtn"   class="ctl" title="Toggle face mesh"><span>🕸️</span><small>Mesh</small></button>
+    <button id="mirrorBtn" class="ctl active" title="Mirror preview"><span>🪞</span><small>Mirror</small></button>
+    <button id="stopBtn"   class="ctl danger" title="Stop camera"><span>⏹</span><small>Stop</small></button>
+  </footer>
+
+</div>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
