@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:single": "tsc -b && VITE_NO_WORKER=1 vite build --outDir dist-single && node scripts-inline.mjs dist-single dist-single/brickify.html",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit false --emitDeclarationOnly false || tsc -b",
     "test": "vitest run",

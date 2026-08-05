@@ -8,10 +8,17 @@ server, no upload, and no API key.
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
-npm test         # 44 tests over the generator
-npm run build    # static site in dist/
+npm run dev           # http://localhost:5173
+npm test              # 44 tests over the generator
+npm run build         # static site in dist/
+npm run build:single  # one self-contained page, dist-single/brickify.html
 ```
+
+`build:single` inlines the CSS and JS into a single HTML file for hosts that
+serve one page and block external requests. It sets `VITE_NO_WORKER=1`, which
+drops the web worker and runs the generator on the main thread instead — the
+page freezes for the fraction of a second the build takes, rather than staying
+responsive. Use the normal build anywhere a second file can be served.
 
 ## What it does
 

@@ -5,7 +5,12 @@ import { ManualViewer } from './ui/ManualViewer';
 import { ExportPanel, FidelityPanel, PartsPanel, StabilityPanel } from './ui/ResultPanels';
 import { loadImageFile, type SourceImage } from './lib/loadImage';
 import { segment } from './core/image/segment';
+import { generateModel } from './core/build/pipeline';
 import { DEFAULT_OPTIONS, type BuildOptions, type BuildResult, type WorkerResponse } from './types';
+
+/** Set at build time for single-file bundles, which have no worker to load. */
+const SUPPORTS_WORKER =
+  typeof Worker !== 'undefined' && import.meta.env.VITE_NO_WORKER !== '1';
 
 interface Rect {
   x0: number;
@@ -34,32 +39,50 @@ export default function App() {
   const requestId = useRef(0);
   const autoBuild = useRef(false);
 
+  const onWorkerMessage = useCallback((message: WorkerResponse) => {
+    if (message.id !== requestId.current) return;
+    if (message.type === 'progress') {
+      setProgress({ stage: message.stage, fraction: message.fraction });
+    } else if (message.type === 'done') {
+      setResult(message.result);
+      setStep(0);
+      setProgress(null);
+      setDirty(false);
+    } else {
+      setError(message.message);
+      setProgress(null);
+    }
+  }, []);
+
   // --- worker lifecycle ----------------------------------------------------
+  // The worker keeps the sliders responsive while a big model generates, but
+  // it is an optimisation, not a requirement: where a separate worker file
+  // cannot be loaded — a single-file build, a restrictive sandbox — the
+  // generator runs on the main thread instead.
   useEffect(() => {
-    const worker = new Worker(new URL('./worker/pipeline.worker.ts', import.meta.url), {
-      type: 'module',
-    });
+    if (!SUPPORTS_WORKER) return;
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL('./worker/pipeline.worker.ts', import.meta.url), {
+        type: 'module',
+      });
+    } catch {
+      return;
+    }
     worker.addEventListener('message', (event: MessageEvent<WorkerResponse>) => {
-      const message = event.data;
-      if (message.id !== requestId.current) return;
-      if (message.type === 'progress') {
-        setProgress({ stage: message.stage, fraction: message.fraction });
-      } else if (message.type === 'done') {
-        setResult(message.result);
-        setStep(0);
-        setProgress(null);
-        setDirty(false);
-      } else {
-        setError(message.message);
-        setProgress(null);
-      }
+      onWorkerMessage(event.data);
+    });
+    worker.addEventListener('error', () => {
+      // Fall back for anything queued after this point.
+      worker.terminate();
+      workerRef.current = null;
     });
     workerRef.current = worker;
     return () => {
       worker.terminate();
       workerRef.current = null;
     };
-  }, []);
+  }, [onWorkerMessage]);
 
   // --- segmentation --------------------------------------------------------
   const runSegmentation = useCallback(
@@ -87,21 +110,46 @@ export default function App() {
 
   const build = useCallback(
     (src: SourceImage, currentMask: Uint8Array, buildOptions: BuildOptions) => {
-      const worker = workerRef.current;
-      if (!worker) return;
-      requestId.current += 1;
+      const id = requestId.current + 1;
+      requestId.current = id;
       setError(null);
       setProgress({ stage: 'Starting', fraction: 0 });
-      worker.postMessage({
-        id: requestId.current,
-        rgba: currentMask ? new Uint8ClampedArray(src.rgba) : src.rgba,
-        width: src.width,
-        height: src.height,
-        mask: new Uint8Array(currentMask),
-        options: buildOptions,
-      });
+
+      const worker = workerRef.current;
+      if (worker) {
+        worker.postMessage({
+          id,
+          rgba: new Uint8ClampedArray(src.rgba),
+          width: src.width,
+          height: src.height,
+          mask: new Uint8Array(currentMask),
+          options: buildOptions,
+        });
+        return;
+      }
+
+      // Main-thread fallback. Yielding first lets the progress bar paint, and
+      // generation is well under a second even for the largest models.
+      window.setTimeout(() => {
+        try {
+          const result = generateModel(
+            src.rgba,
+            currentMask,
+            src.width,
+            src.height,
+            buildOptions,
+          );
+          onWorkerMessage({ id, type: 'done', result });
+        } catch (e) {
+          onWorkerMessage({
+            id,
+            type: 'error',
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }, 32);
     },
-    [],
+    [onWorkerMessage],
   );
 
   // Build once automatically as soon as the first mask is ready.
