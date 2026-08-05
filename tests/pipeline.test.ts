@@ -11,13 +11,19 @@ import {
 } from '../src/core/build/stability';
 import { buildSteps, orderPlacements } from '../src/core/build/steps';
 import { findPart, ALL_PARTS } from '../src/core/lego/catalog';
-import { deltaE2000, nearestColorIndex, PALETTE, rgbToLab } from '../src/core/lego/colors';
+import {
+  COLOR_BY_LDRAW,
+  deltaE2000,
+  nearestColorIndex,
+  PALETTE,
+  rgbToLab,
+} from '../src/core/lego/colors';
 import { platesForAspect } from '../src/core/lego/units';
 import { toLdraw } from '../src/core/export/ldraw';
 import { buildPartsList } from '../src/core/export/bom';
 import { distanceTransform, fillHoles, keepLargestComponents } from '../src/core/image/raster';
 import { segment } from '../src/core/image/segment';
-import { DEFAULT_OPTIONS, type Placement } from '../src/types';
+import { DEFAULT_OPTIONS, type BuildOptions, type Placement } from '../src/types';
 
 /** A synthetic photo: a coloured disc on a flat background. */
 function makeTestImage(width: number, height: number) {
@@ -398,6 +404,136 @@ describe('shape modes', () => {
     expect(bricks.placements.every((p) => p.height === 3)).toBe(true);
     // Detail is not free, and the report should show that it is not.
     expect(bricks.totalParts).toBeLessThan(mixed.totalParts);
+  });
+});
+
+describe('the unseen far side', () => {
+  /**
+   * A head: skin in the middle, hair around the outside, dark eyes. Only the
+   * hair genuinely wraps round the back — the eyes must not appear there.
+   */
+  function makeHead(width: number, height: number) {
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    const mask = new Uint8Array(width * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const nx = (x - width / 2) / (width * 0.32);
+        const ny = (y - height / 2) / (height * 0.42);
+        const inside = nx * nx + ny * ny <= 1;
+        mask[y * width + x] = inside ? 1 : 0;
+        rgba[i + 3] = 255;
+        if (!inside) {
+          rgba[i] = 238;
+          rgba[i + 1] = 240;
+          rgba[i + 2] = 243;
+          continue;
+        }
+        if (Math.hypot(nx, ny) > 0.62) {
+          rgba[i] = 70; // hair
+          rgba[i + 1] = 42;
+          rgba[i + 2] = 20;
+        } else {
+          rgba[i] = 232; // skin
+          rgba[i + 1] = 190;
+          rgba[i + 2] = 150;
+        }
+      }
+    }
+    return { rgba, mask, width, height };
+  }
+
+  const head = makeHead(180, 220);
+  const run = (backTreatment: BuildOptions['backTreatment']) =>
+    generateModel(head.rgba, head.mask, head.width, head.height, {
+      ...DEFAULT_OPTIONS,
+      studsWide: 24,
+      hollow: false,
+      backTreatment,
+      seed: 9,
+    });
+
+  /** Colours visible looking at the model from the front, or from behind. */
+  function surfaceColours(result: ReturnType<typeof run>, from: 'front' | 'back') {
+    const { gridX: sx, gridY: sy, gridZ: sz } = result;
+    const grid = new Int32Array(sx * sy * sz).fill(-1);
+    for (const p of result.placements) {
+      for (let y = p.y; y < p.y + p.height; y++) {
+        for (let dz = 0; dz < p.d; dz++) {
+          for (let dx = 0; dx < p.w; dx++) {
+            grid[(y * sz + (p.z + dz)) * sx + (p.x + dx)] = p.color;
+          }
+        }
+      }
+    }
+    const seen = new Map<number, number>();
+    for (let y = 0; y < sy; y++) {
+      for (let x = 0; x < sx; x++) {
+        let found = -1;
+        for (let k = 0; k < sz; k++) {
+          const z = from === 'front' ? k : sz - 1 - k;
+          const v = grid[(y * sz + z) * sx + x];
+          if (v >= 0) {
+            found = v;
+            break;
+          }
+        }
+        if (found >= 0) seen.set(found, (seen.get(found) ?? 0) + 1);
+      }
+    }
+    const total = [...seen.values()].reduce((a, b) => a + b, 0);
+    const share = new Map<string, number>();
+    for (const [code, n] of seen) {
+      share.set(COLOR_BY_LDRAW.get(code)?.name ?? String(code), n / total);
+    }
+    return share;
+  }
+
+  const skinish = (name: string) => /Nougat|Tan/.test(name);
+
+  it('does not paint the front of the face onto the back', () => {
+    const wrapped = run('wrap');
+    const front = surfaceColours(wrapped, 'front');
+    const back = surfaceColours(wrapped, 'back');
+
+    // Skin dominates the front...
+    const frontSkin = [...front].filter(([n]) => skinish(n)).reduce((a, [, v]) => a + v, 0);
+    expect(frontSkin).toBeGreaterThan(0.2);
+
+    // ...and must be essentially absent from the back, which sees only the
+    // hair that genuinely wraps round.
+    const backSkin = [...back].filter(([n]) => skinish(n)).reduce((a, [, v]) => a + v, 0);
+    expect(backSkin).toBeLessThan(0.02);
+  });
+
+  it('still mirrors the face onto the back when explicitly asked to', () => {
+    // The old behaviour, kept as an option. Asserted so the difference between
+    // the treatments stays visible: this is exactly what 'wrap' avoids.
+    const back = surfaceColours(run('mirror'), 'back');
+    const backSkin = [...back].filter(([n]) => skinish(n)).reduce((a, [, v]) => a + v, 0);
+    expect(backSkin).toBeGreaterThan(0.2);
+  });
+
+  it('gives a plain back a single colour', () => {
+    const back = surfaceColours(run('flat'), 'back');
+    expect(back.size).toBe(1);
+  });
+
+  it('leaves the photographed side untouched whichever guess is used', () => {
+    const wrapped = surfaceColours(run('wrap'), 'front');
+    const flat = surfaceColours(run('flat'), 'front');
+    for (const [name, share] of wrapped) {
+      expect(flat.get(name) ?? 0).toBeCloseTo(share, 5);
+    }
+  });
+
+  it('costs nothing structurally: the far side is a guess, not a weakness', () => {
+    for (const treatment of ['wrap', 'flat', 'mirror'] as const) {
+      const result = run(treatment);
+      expect(result.stability.assemblies).toBe(1);
+      expect(result.stability.score).toBeGreaterThanOrEqual(85);
+      expect(result.fidelity.silhouetteIoU).toBeGreaterThan(0.9);
+    }
   });
 });
 

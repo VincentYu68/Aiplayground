@@ -27,7 +27,8 @@ responsive. Use the normal build anywhere a second file can be served.
    photos it gets wrong.
 2. **Lifts the silhouette into a solid.** Three modes: a rounded solid that
    bulges front and back, a solid of revolution for anything turned on a lathe,
-   and a flat-backed relief.
+   and a flat-backed relief. The far side is treated as unknown rather than
+   assumed — see below.
 3. **Samples it onto the LEGO lattice** — 8mm across, 3.2mm per plate — and
    reduces the colours to a chosen number of real LEGO colours using CIEDE2000.
 4. **Chooses the bricks**, scoring every candidate placement for size, stud
@@ -63,6 +64,34 @@ as intersection-over-union against the cut-out, and mean CIEDE2000 colour error
 against the source pixels. The front-on model preview is drawn at the real
 8 : 3.2 stud-to-plate ratio so the side-by-side comparison is honest.
 
+## The side the camera never saw
+
+Half of any solid model is a side the photograph does not show, and the
+tempting default — mirroring the front — is the one answer that is reliably
+wrong. It puts a second face on the back of a head and a second grille on the
+back of a car, and because those features are bright and recognisable, the
+error is far more visible than any amount of smoothing would be.
+
+Two things are therefore kept off the back:
+
+- **Shading relief.** Luminance only describes the surface facing the camera,
+  so it shapes the front alone. The back gets the bare geometric bulge that the
+  silhouette implies.
+- **Front colours.** There is one part of the photo that genuinely describes
+  the far side: the pixels along the silhouette, which are the surface seen
+  edge-on at the point where it turns away and continues round the back.
+  Carrying that colour inwards — a nearest-boundary feature transform — gives
+  the object's own wrap-around colour: the hair around a face, the paint around
+  a grille.
+
+`Back of the model` offers **wrap the edges round** (the default), **plain
+back** (one solid colour, cheapest and most honest), and **mirror the front**
+for the cases where the object really is symmetric.
+
+On a synthetic head, wrapping removes skin tones from the back entirely
+(under 2% of the rear surface, against 33% when mirrored) while leaving the
+photographed front pixel-for-pixel identical.
+
 ## Two findings worth knowing about
 
 **Colour boundaries are structural.** A part can only be one colour, so a colour
@@ -74,6 +103,14 @@ decision by a fraction of a percent per course, which moves the boundary a stud
 either way between courses without any visible change, and lets the next course
 reach across. On the test vase this took the model from 8 loose sections to one
 piece.
+
+**A colour boundary is a structural joint, in every axis.** The front/back
+colour change is a plane no part may cross, and pinned at a fixed depth it
+becomes a crack running through the whole model — the vertical-band problem
+lying on its side. Walking that boundary a stud back and forth between courses
+fixed it and then paid for itself: the wrapped back ends up using *fewer* parts
+than the old mirrored one (2818 vs 2944 on the test head) and scores higher for
+stability (91 vs 90).
 
 **Hollowing has to be measured in millimetres.** A voxel step is 8mm sideways
 and 3.2mm vertically. Carving out "two voxels" of shell leaves 16mm through a

@@ -3,6 +3,15 @@ import type { PartHeight } from './core/lego/catalog';
 /** How the flat photo is lifted into a solid. */
 export type SolidMode = 'relief' | 'symmetric' | 'revolve';
 
+/**
+ * What to do with the side of the object the photograph never saw.
+ *
+ * 'wrap'   carry the colours at the silhouette round to the back
+ * 'flat'   one plain colour for the whole far side
+ * 'mirror' repeat the front, which is almost always wrong
+ */
+export type BackTreatment = 'wrap' | 'flat' | 'mirror';
+
 /** Vertical resolution of the build. */
 export type BuildResolution = 'bricks' | 'mixed';
 
@@ -12,6 +21,8 @@ export interface BuildOptions {
   /** Peak thickness as a fraction of the model's width. */
   depthScale: number;
   solidMode: SolidMode;
+  /** How the unseen far side of the object is coloured. */
+  backTreatment: BackTreatment;
   resolution: BuildResolution;
   /** Cap on distinct colours; the palette is reduced to fit. 0 = no cap. */
   maxColors: number;
@@ -29,6 +40,10 @@ export const DEFAULT_OPTIONS: BuildOptions = {
   studsWide: 32,
   depthScale: 0.55,
   solidMode: 'symmetric',
+  // A photo says nothing about the far side. Wrapping the silhouette colours
+  // round is a guess; mirroring the front is a confident fabrication, and a
+  // recognisable one — a second face on the back of a head.
+  backTreatment: 'wrap',
   // Course-aligned bricks by default: on a curved surface, plate-level layers
   // produce one-plate rings that overhang whatever is under them, which roughly
   // doubles the part count and halves the stability score for detail you can

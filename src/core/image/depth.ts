@@ -35,15 +35,26 @@ function luminance(rgba: Uint8ClampedArray, i: number): number {
 }
 
 /**
- * Thickness field in 0..1, zero outside the mask.
+ * How far the surface sits from the object's centre plane, front and back,
+ * each in 0..1 of the model's depth. `front + back` peaks at exactly 1.
+ *
+ * They are separate because the two sides are known to different degrees. The
+ * silhouette constrains both equally, but shading only ever describes the side
+ * facing the camera — mirroring it onto the back puts a second nose on the back
+ * of a head.
  */
+export interface DepthField {
+  front: Float32Array;
+  back: Float32Array;
+}
+
 export function estimateDepth(
   rgba: Uint8ClampedArray,
   mask: Mask,
   width: number,
   height: number,
   optionsIn: Partial<DepthOptions> = {},
-): Float32Array {
+): DepthField {
   const options = { ...DEFAULT_DEPTH_OPTIONS, ...optionsIn };
   const n = width * height;
 
@@ -85,29 +96,36 @@ export function estimateDepth(
   const smoothShading = boxBlur(shading, width, height, radius, 2);
 
   const w = Math.max(0, Math.min(1, options.shadingInfluence));
-  const combined = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    if (!mask[i]) continue;
-    // Shading modulates rather than replaces: it can only push thickness
-    // around within the envelope the silhouette allows, which keeps a bright
-    // background reflection from blowing a hole through the object.
-    const s = 0.55 + 0.45 * smoothShading[i];
-    combined[i] = (1 - w) * bulge[i] + w * bulge[i] * s * 1.25;
-  }
+  const smoothBulge = boxBlur(bulge, width, height, Math.max(1, radius >> 1), 2);
 
-  const smoothed = boxBlur(combined, width, height, Math.max(1, radius >> 1), 2);
+  const front = new Float32Array(n);
+  const back = new Float32Array(n);
   let max = 0;
   for (let i = 0; i < n; i++) {
-    if (!mask[i]) {
-      smoothed[i] = 0;
-      continue;
-    }
-    if (smoothed[i] > max) max = smoothed[i];
+    if (!mask[i]) continue;
+    const half = 0.5 * smoothBulge[i];
+
+    // The back is the bare geometric bulge: the photograph says nothing about
+    // it beyond the outline, so inventing detail there is worse than leaving
+    // it smooth.
+    back[i] = half;
+
+    // The front carries the shading relief on top of that bulge. It is scaled
+    // by the bulge so it fades out at the silhouette and the outline stays
+    // crisp — and it only ever adds, so a dark patch cannot punch a dent
+    // through the object.
+    front[i] = half * (1 + w * 0.5 * smoothShading[i]);
+
+    const total = front[i] + back[i];
+    if (total > max) max = total;
   }
   if (max > 0) {
-    for (let i = 0; i < n; i++) smoothed[i] = mask[i] ? smoothed[i] / max : 0;
+    for (let i = 0; i < n; i++) {
+      front[i] /= max;
+      back[i] /= max;
+    }
   }
-  return smoothed;
+  return { front, back };
 }
 
 /**

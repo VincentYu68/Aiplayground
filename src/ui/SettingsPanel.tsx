@@ -1,4 +1,4 @@
-import type { BuildOptions, SolidMode } from '../types';
+import type { BackTreatment, BuildOptions, SolidMode } from '../types';
 
 interface Props {
   options: BuildOptions;
@@ -23,6 +23,24 @@ const SOLID_MODES: Array<{ value: SolidMode; label: string; hint: string }> = [
     value: 'relief',
     label: 'Relief',
     hint: 'Flat back, raised front. For plaques, logos and wall pieces.',
+  },
+];
+
+const BACK_TREATMENTS: Array<{ value: BackTreatment; label: string; hint: string }> = [
+  {
+    value: 'wrap',
+    label: 'Wrap the edges round',
+    hint: 'Carries the colours at the outline round the back. The safest guess.',
+  },
+  {
+    value: 'flat',
+    label: 'Plain back',
+    hint: 'One solid colour behind. Cheapest, and honest about what is unknown.',
+  },
+  {
+    value: 'mirror',
+    label: 'Mirror the front',
+    hint: 'Repeats the photo on the back — a second face on the back of a head.',
   },
 ];
 
@@ -82,6 +100,28 @@ export function SettingsPanel({ options, threshold, onChange, onThresholdChange,
           hint="How much the photo's shading shapes the surface. Raise it for faces and folds, drop it for flat lighting."
           onChange={(v) => onChange({ shadingInfluence: v / 100 })}
         />
+
+        <div className="mode-list">
+          <p className="field-hint back-note">
+            The photo shows one side only. The back is a guess, and this is the guess.
+          </p>
+          {BACK_TREATMENTS.map((mode) => (
+            <label
+              key={mode.value}
+              className={options.backTreatment === mode.value ? 'mode active' : 'mode'}
+            >
+              <input
+                type="radio"
+                name="backTreatment"
+                value={mode.value}
+                checked={options.backTreatment === mode.value}
+                onChange={() => onChange({ backTreatment: mode.value })}
+              />
+              <span className="mode-label">{mode.label}</span>
+              <span className="mode-hint">{mode.hint}</span>
+            </label>
+          ))}
+        </div>
 
         <Slider
           label="Cutout sensitivity"

@@ -11,16 +11,18 @@
 import { deltaE2000, PALETTE, rgbToLab, type LegoColor } from '../lego/colors';
 import { platesForAspect } from '../lego/units';
 import { bounds, type Mask } from '../image/raster';
-import { centerProfile, radiusProfile } from '../image/depth';
+import { centerProfile, radiusProfile, type DepthField } from '../image/depth';
+import { nearestEdgePixel } from '../image/wrap';
 import { nearestColorIndex } from '../lego/colors';
 import { selectPalette } from './quantize';
 import { EMPTY, VoxelGrid } from './grid';
-import type { SolidMode } from '../../types';
+import type { BackTreatment, SolidMode } from '../../types';
 
 export interface VoxelizeOptions {
   studsWide: number;
   depthScale: number;
   solidMode: SolidMode;
+  backTreatment: BackTreatment;
   maxColors: number;
   /** Round the model's height to whole 3-plate courses (brick-only builds). */
   wholeCourses: boolean;
@@ -44,6 +46,18 @@ export interface VoxelizeResult {
  * near-equally good matches.
  */
 const COURSE_COLOR_JITTER = 0.07;
+
+/**
+ * How far the front/back colour boundary shifts from course to course.
+ *
+ * The boundary between the photographed front and the guessed back is a colour
+ * change, and no single part may cross a colour change. Left at a fixed depth
+ * it becomes a flat plane running through the whole model that every course
+ * has to stop at — the same stacked-joint weakness as a vertical colour band,
+ * just lying on its side. Walking it a stud back and forth lets each course
+ * bridge where the last one could not.
+ */
+const SPLIT_WALK = [0, 1, 0, -1];
 
 /**
  * Pick a brick colour, letting the choice wander very slightly from course to
@@ -86,29 +100,54 @@ function colorForColumn(
 
 interface ColumnSample {
   filled: boolean;
+  /** Mean colour of the object's front surface under this column. */
   r: number;
   g: number;
   b: number;
-  depth: number;
+  /** Mean colour wrapped round from the nearest silhouette edge. */
+  wr: number;
+  wg: number;
+  wb: number;
+  /** Half-thickness toward the camera and away from it, each in 0..1. */
+  front: number;
+  back: number;
 }
 
 /** Average the source pixels under one grid column. */
 function sampleColumn(
   rgba: Uint8ClampedArray,
   mask: Mask,
-  depth: Float32Array,
+  depth: DepthField,
+  edgeSource: Int32Array,
   width: number,
   x0: number,
   x1: number,
   y0: number,
   y1: number,
 ): ColumnSample {
+  const empty: ColumnSample = {
+    filled: false,
+    r: 0,
+    g: 0,
+    b: 0,
+    wr: 0,
+    wg: 0,
+    wb: 0,
+    front: 0,
+    back: 0,
+  };
+
   let r = 0;
   let g = 0;
   let b = 0;
-  let d = 0;
+  let wr = 0;
+  let wg = 0;
+  let wb = 0;
+  let front = 0;
+  let back = 0;
   let inside = 0;
   let total = 0;
+
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const i = y * width + x;
@@ -119,14 +158,30 @@ function sampleColumn(
       r += rgba[p];
       g += rgba[p + 1];
       b += rgba[p + 2];
-      d += depth[i];
+
+      const e = edgeSource[i];
+      const ep = (e >= 0 ? e : i) * 4;
+      wr += rgba[ep];
+      wg += rgba[ep + 1];
+      wb += rgba[ep + 2];
+
+      front += depth.front[i];
+      back += depth.back[i];
     }
   }
-  if (total === 0) return { filled: false, r: 0, g: 0, b: 0, depth: 0 };
-  if (inside === 0 || inside / total < 0.5) {
-    return { filled: false, r: 0, g: 0, b: 0, depth: 0 };
-  }
-  return { filled: true, r: r / inside, g: g / inside, b: b / inside, depth: d / inside };
+
+  if (total === 0 || inside === 0 || inside / total < 0.5) return empty;
+  return {
+    filled: true,
+    r: r / inside,
+    g: g / inside,
+    b: b / inside,
+    wr: wr / inside,
+    wg: wg / inside,
+    wb: wb / inside,
+    front: front / inside,
+    back: back / inside,
+  };
 }
 
 export function voxelize(
@@ -134,7 +189,7 @@ export function voxelize(
   mask: Mask,
   width: number,
   height: number,
-  depth: Float32Array,
+  depth: DepthField,
   options: VoxelizeOptions,
 ): VoxelizeResult {
   const box = bounds(mask, width, height);
@@ -160,6 +215,9 @@ export function voxelize(
   const pxPerStud = box.width / gridX;
   const pxPerPlate = box.height / gridY;
 
+  // Which silhouette pixel each interior pixel wraps round to, for the far side.
+  const edgeSource = nearestEdgePixel(mask, width, height);
+
   // --- pass 1: sample every column ----------------------------------------
   const columns: ColumnSample[] = new Array(gridX * gridY);
   for (let gy = 0; gy < gridY; gy++) {
@@ -173,6 +231,7 @@ export function voxelize(
         rgba,
         mask,
         depth,
+        edgeSource,
         width,
         Math.min(sx0, width - 1),
         Math.min(sx1, width),
@@ -197,17 +256,44 @@ export function voxelize(
 
   const frontMask = new Uint8Array(gridX * gridY);
   const frontColor = new Int16Array(gridX * gridY).fill(EMPTY);
+  const backColor = new Int16Array(gridX * gridY).fill(EMPTY);
   let deltaSum = 0;
   let deltaCount = 0;
+  const colorTally = new Map<number, number>();
+
   for (let i = 0; i < columns.length; i++) {
     const c = columns[i];
     if (!c.filled) continue;
     frontMask[i] = 1;
-    const gy = Math.floor(i / gridX);
-    const { index, deltaE } = colorForColumn(rgbToLab(c.r, c.g, c.b), palette, Math.floor(gy / 3));
+    const course = Math.floor(Math.floor(i / gridX) / 3);
+
+    const { index, deltaE } = colorForColumn(rgbToLab(c.r, c.g, c.b), palette, course);
     frontColor[i] = index;
     deltaSum += deltaE;
     deltaCount++;
+    colorTally.set(index, (colorTally.get(index) ?? 0) + 1);
+
+    // The far side is only ever a guess, so it is never scored for fidelity.
+    backColor[i] =
+      options.backTreatment === 'mirror'
+        ? index
+        : colorForColumn(rgbToLab(c.wr, c.wg, c.wb), palette, course).index;
+  }
+
+  if (options.backTreatment === 'flat') {
+    // One colour for the whole of the far side: the model's dominant colour,
+    // which reads as a deliberate plain back rather than a smeared guess.
+    let dominant = 0;
+    let bestN = -1;
+    for (const [index, n] of colorTally) {
+      if (n > bestN) {
+        bestN = n;
+        dominant = index;
+      }
+    }
+    for (let i = 0; i < backColor.length; i++) {
+      if (frontMask[i]) backColor[i] = dominant;
+    }
   }
 
   // --- pass 3: extrude into the depth axis --------------------------------
@@ -222,18 +308,29 @@ export function voxelize(
         const i = gy * gridX + gx;
         if (!frontMask[i]) continue;
         const c = columns[i];
-        const thickness = Math.max(1, Math.round(c.depth * gridZ));
+
+        const total = c.front + c.back;
+        const thickness = Math.max(1, Math.round(total * gridZ));
         let z0: number;
-        let z1: number;
         if (options.solidMode === 'relief') {
           z0 = 0;
-          z1 = thickness - 1;
         } else {
-          z0 = Math.round(centre - (thickness - 1) / 2);
-          z1 = z0 + thickness - 1;
+          // Keep the object's own front/back split rather than centring it, so
+          // shading relief pushes forward instead of fattening both sides.
+          const frontShare = total > 0 ? c.front / total : 0.5;
+          z0 = Math.round(centre - (thickness - 1) * frontShare);
         }
+        const z1 = z0 + thickness - 1;
+
+        // z counts back from the camera, so the front half takes the low end.
+        const frontDepth = Math.max(1, Math.round(thickness * (total > 0 ? c.front / total : 0.5)));
+        const course = Math.floor(gy / 3);
+        const walk = SPLIT_WALK[course % SPLIT_WALK.length];
+        // Clamped so neither side is squeezed out of a thin column.
+        const split = Math.max(z0, Math.min(z1 - 1, z0 + frontDepth - 1 + walk));
+
         for (let z = Math.max(0, z0); z <= Math.min(gridZ - 1, z1); z++) {
-          grid.set(gx, gy, z, frontColor[i]);
+          grid.set(gx, gy, z, z <= split ? frontColor[i] : backColor[i]);
         }
       }
     }

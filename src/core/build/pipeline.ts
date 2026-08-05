@@ -42,6 +42,7 @@ export function generateModel(
     studsWide: options.studsWide,
     depthScale: options.depthScale,
     solidMode: options.solidMode,
+    backTreatment: options.backTreatment,
     maxColors: options.maxColors,
     wholeCourses: options.resolution === 'bricks',
     seed: options.seed,
