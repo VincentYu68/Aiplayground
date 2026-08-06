@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
     steps:
       # The default branch already publishes a different project at the site
       # root. Since there is only one site per repository, deploying this app
@@ -76,13 +76,21 @@ jobs:
         with:
           path: site
 
-      # Pages queues the deployment on its own backend, and that queue is
-      # slow often enough to matter: one run waited 9m07s against the action's
-      # 10-minute default and the run before it timed out at exactly 10:00
-      # with a green build behind it. Waiting longer costs nothing when the
-      # queue is quick, so give it room rather than publishing on a coin flip.
+      # Pages queues the deployment on its own backend after the artifact is
+      # uploaded, and that queue has been sitting right at the action's limit:
+      # 9m07s on one run, over ten minutes on the two either side of it, each
+      # time with a green build and a successful upload behind it.
+      #
+      # The limit cannot be raised. The action clamps its own `timeout` input
+      # to MAX_TIMEOUT = 600000 (see actions/deploy-pages, internal/deployment.js),
+      # so passing a larger value is silently ignored — which it was, here, for
+      # one commit. The only remedy left is to ask a second time.
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
-        with:
-          timeout: 1200000
+        continue-on-error: true
+
+      - name: Deploy (second attempt)
+        id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v4
