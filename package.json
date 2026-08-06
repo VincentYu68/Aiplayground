@@ -11,9 +11,15 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit false --emitDeclarationOnly false || tsc -b",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "predev": "node scripts/sync-ort.mjs",
+    "prebuild": "node scripts/sync-ort.mjs",
+    "pretest": "node scripts/sync-ort.mjs",
+    "bench": "vite-node bench/run.ts",
+    "bench:browser": "node bench/browser.mjs"
   },
   "dependencies": {
+    "onnxruntime-web": "^1.27.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "three": "^0.169.0"
@@ -23,6 +29,7 @@
     "@types/react-dom": "^18.3.1",
     "@types/three": "^0.169.0",
     "@vitejs/plugin-react": "^4.3.3",
+    "playwright-core": "^1.62.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.10",
     "vitest": "^2.1.4"

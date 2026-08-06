@@ -162,6 +162,9 @@ export interface BuildResult {
   elapsedMs: number;
 }
 
+/** Which segmenter produced a cut-out. */
+export type SegmentEngine = 'sam' | 'grabcut';
+
 /** A rectangle in image pixels. */
 export interface Rect {
   x0: number;
@@ -182,6 +185,8 @@ export interface ViewState {
   azimuth: number;
   /** Cut-out sensitivity for this photo; lighting differs between shots. */
   threshold: number;
+  /** Which segmenter produced `mask`, so the UI can say. */
+  engine: SegmentEngine | null;
 }
 
 /**
@@ -192,6 +197,15 @@ export interface ViewState {
  * off the main thread just as much as the build does.
  */
 export type WorkerRequest =
+  | {
+      /**
+       * Where to fetch the segmentation model from. Sent once at startup; the
+       * URLs come from the page because only the page knows where it is
+       * deployed, and this app is mounted in a subdirectory.
+       */
+      kind: 'configure';
+      urls: { runtime: string; encoder: string; decoder: string };
+    }
   | {
       kind: 'build';
       id: number;
@@ -218,9 +232,24 @@ export type WorkerRequest =
       hints: Uint8Array | null;
     };
 
+
+
 export type WorkerResponse =
   | { id: number; type: 'progress'; stage: string; fraction: number }
   | { id: number; type: 'done'; result: BuildResult }
   | { id: number; type: 'error'; message: string }
-  | { type: 'segmented'; viewId: number; seq: number; mask: Uint8Array }
-  | { type: 'segment-error'; viewId: number; seq: number; message: string };
+  | {
+      type: 'segmented';
+      viewId: number;
+      seq: number;
+      mask: Uint8Array;
+      engine: SegmentEngine;
+      /** The box the cut-out actually used, so the editor can show it. */
+      box: Rect | null;
+    }
+  | { type: 'segment-error'; viewId: number; seq: number; message: string }
+  | { type: 'model-progress'; loaded: number; total: number }
+  | { type: 'model-ready' }
+  // Not an error the user has to act on: the app keeps working on the old
+  // segmenter, it is just less accurate.
+  | { type: 'model-unavailable'; message: string };

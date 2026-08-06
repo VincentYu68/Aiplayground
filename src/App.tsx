@@ -29,6 +29,15 @@ export default function App() {
   const [threshold, setThreshold] = useState(0.5);
   /** Cut-outs currently in flight; the outline is expensive enough to show. */
   const [segmenting, setSegmenting] = useState(0);
+  /**
+   * The segmentation model is ~19MB and downloads in the background. Until it
+   * lands the app cuts photos out with the old colour-model segmenter, which
+   * works but is markedly less accurate, so its state is worth showing.
+   */
+  const [model, setModel] = useState<{
+    state: 'loading' | 'ready' | 'unavailable';
+    fraction: number;
+  }>({ state: 'loading', fraction: 0 });
 
   const [options, setOptions] = useState<BuildOptions>(DEFAULT_OPTIONS);
   const [result, setResult] = useState<BuildResult | null>(null);
@@ -46,6 +55,19 @@ export default function App() {
   const active = views.find((v) => v.id === activeId) ?? views[0] ?? null;
 
   const onWorkerMessage = useCallback((message: WorkerResponse) => {
+    if (message.type === 'model-progress') {
+      setModel({ state: 'loading', fraction: message.total ? message.loaded / message.total : 0 });
+      return;
+    }
+    if (message.type === 'model-ready') {
+      setModel({ state: 'ready', fraction: 1 });
+      return;
+    }
+    if (message.type === 'model-unavailable') {
+      setModel({ state: 'unavailable', fraction: 0 });
+      return;
+    }
+
     if (message.type === 'segmented' || message.type === 'segment-error') {
       // Drop anything the user has already superseded with a newer stroke.
       if (segmentSeq.current.get(message.viewId) !== message.seq) return;
@@ -55,7 +77,9 @@ export default function App() {
         return;
       }
       setViews((current) =>
-        current.map((v) => (v.id === message.viewId ? { ...v, mask: message.mask } : v)),
+        current.map((v) =>
+          v.id === message.viewId ? { ...v, mask: message.mask, engine: message.engine } : v,
+        ),
       );
       return;
     }
@@ -80,13 +104,21 @@ export default function App() {
   // cannot be loaded — a single-file build, a restrictive sandbox — the
   // generator runs on the main thread instead.
   useEffect(() => {
-    if (!SUPPORTS_WORKER) return;
+    // No worker means no model: the single-file build has nowhere to fetch 19MB
+    // of weights from, and running the encoder on the main thread would lock
+    // the page for seconds per photo. Say so rather than showing a progress
+    // figure that will never move.
+    if (!SUPPORTS_WORKER) {
+      setModel({ state: 'unavailable', fraction: 0 });
+      return;
+    }
     let worker: Worker;
     try {
       worker = new Worker(new URL('./worker/pipeline.worker.ts', import.meta.url), {
         type: 'module',
       });
     } catch {
+      setModel({ state: 'unavailable', fraction: 0 });
       return;
     }
     worker.addEventListener('message', (event: MessageEvent<WorkerResponse>) => {
@@ -97,6 +129,17 @@ export default function App() {
       workerRef.current = null;
     });
     workerRef.current = worker;
+    // Only the page knows where it is deployed — this app is mounted in a
+    // subdirectory of a site it does not own — so the model URLs are resolved
+    // here and handed over rather than guessed inside the worker.
+    worker.postMessage({
+      kind: 'configure' as const,
+      urls: {
+        runtime: new URL('ort/', document.baseURI).href,
+        encoder: new URL('models/mobilesam-encoder.onnx', document.baseURI).href,
+        decoder: new URL('models/mobilesam-decoder.onnx', document.baseURI).href,
+      },
+    });
     return () => {
       worker.terminate();
       workerRef.current = null;
@@ -140,7 +183,14 @@ export default function App() {
                 rect: request.rect,
                 hints: request.hints,
               });
-              onWorkerMessage({ type: 'segmented', viewId, seq, mask });
+              onWorkerMessage({
+                type: 'segmented',
+                viewId,
+                seq,
+                mask,
+                engine: 'grabcut',
+                box: request.rect,
+              });
             } catch (e) {
               onWorkerMessage({
                 type: 'segment-error',
@@ -156,6 +206,19 @@ export default function App() {
     },
     [onWorkerMessage],
   );
+
+  // Photos dropped in before the model finished downloading were cut out by
+  // the fallback. Redo them once it arrives: the gap between the two is large
+  // enough (75.8% against 95.4% mean IoU on the benchmark) that leaving the
+  // worse outline in place would be leaving the model unused.
+  const viewsRef = useRef<ViewState[]>([]);
+  viewsRef.current = views;
+  const upgraded = useRef(false);
+  useEffect(() => {
+    if (model.state !== 'ready' || upgraded.current) return;
+    upgraded.current = true;
+    for (const v of viewsRef.current) runSegmentation(v.id);
+  }, [model.state, runSegmentation]);
 
   const build = useCallback(
     (ready: ViewState[], buildOptions: BuildOptions) => {
@@ -221,6 +284,7 @@ export default function App() {
             mask: null,
             azimuth,
             threshold,
+            engine: null,
           };
           return [...base, view];
         });
@@ -357,6 +421,22 @@ export default function App() {
                 onCommit={() => runSegmentation(active.id)}
               />
               {segmenting > 0 && <p className="hint working">Working out the outline…</p>}
+              {model.state === 'loading' && (
+                <p className="hint">
+                  Loading the object-recognition model…{' '}
+                  {Math.round(model.fraction * 100)}% — outlines will sharpen when it
+                  lands.
+                </p>
+              )}
+              {active?.engine === 'sam' && segmenting === 0 && (
+                <p className="hint">Outline by the object-recognition model.</p>
+              )}
+              {model.state === 'unavailable' && (
+                <p className="hint">
+                  Running on the built-in outliner: the recognition model could not be
+                  loaded. Drawing a box around the object helps it a lot.
+                </p>
+              )}
             </section>
 
             <section className="panel">

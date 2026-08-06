@@ -9,21 +9,23 @@ server, no upload, and no API key.
 ```bash
 npm install
 npm run dev           # http://localhost:5173
-npm test              # 44 tests over the generator
+npm test              # 72 tests over the generator and the cut-out
 npm run build         # static site in dist/
 npm run build:single  # one self-contained page, dist-single/brickify.html
 ```
 
 `build:single` inlines the CSS and JS into a single HTML file for hosts that
-serve one page and block external requests. It sets `VITE_NO_WORKER=1`, which
+serve one page and block external requests. It cannot carry the 19MB
+segmentation model, so it falls back to GrabCut and says so in the UI. It sets `VITE_NO_WORKER=1`, which
 drops the web worker and runs the generator on the main thread instead — the
 page freezes for the fraction of a second the build takes, rather than staying
 responsive. Use the normal build anywhere a second file can be served.
 
 ## What it does
 
-1. **Cuts the object out of each photo** with GrabCut — see below. A brush and
-   a bounding box are there for the photos it still gets wrong.
+1. **Cuts the object out of each photo** with Segment Anything, running in the
+   browser — see below. A brush and a bounding box are there for the photos it
+   still gets wrong.
 2. **Lifts the silhouette into a solid.** Three modes: a rounded solid that
    bulges front and back, a solid of revolution for anything turned on a lathe,
    and a flat-backed relief. The far side is treated as unknown rather than
@@ -65,6 +67,89 @@ against the source pixels. The front-on model preview is drawn at the real
 
 ## Cutting the object out
 
+The object is cut out by **Segment Anything** (MobileSAM), running entirely in
+the browser on WebAssembly. The colour-model segmenter described further down
+is still in the codebase — it is the fallback, and it proposes the initial
+prompt — but it is no longer what produces the outline.
+
+### Why, measured
+
+Colour models do not know what an object is. They group pixels that look alike,
+which is why they merge an object with its own shadow, wander onto the
+tablecloth, and delete a chair's legs — thin things are cheap to remove when you
+are paying by boundary length. That is a property of the formulation, not a
+tuning problem, so the only honest way to settle it was to build a benchmark and
+measure.
+
+`bench/` composites eight known objects over ten backgrounds — eighty scenes with
+exact ground truth. The objects are drawn analytically with shading, specular
+highlights, thin structures and real holes; the backgrounds run from a studio
+sweep to a wood table, clutter, and a wall painted the object's own colour. Each
+scene casts a soft shadow that is deliberately *not* part of the truth mask,
+because "dark pixels next to the object" is the most common way a segmenter is
+fooled.
+
+| method | mean IoU | boundary F1 | invented area | scenes below 50% |
+|---|---|---|---|---|
+| GrabCut, no user input | 75.8% | 60.4% | 47.9% | 19 / 80 |
+| GrabCut, user box | 78.7% | 64.3% | 35.0% | 14 / 80 |
+| **SAM, automatic box** | **95.4%** | **95.0%** | **3.8%** | **0 / 80** |
+| SAM, user box | 96.1% | 96.9% | 4.0% | 1 / 80 |
+
+Boundary F1 is reported next to IoU because IoU alone is forgiving: an outline
+that is two pixels wrong *everywhere* still scores about 0.97 on a chunky
+object, and two pixels is a whole stud once the model is carved.
+
+### Three findings, all of them load-bearing
+
+- **The prompt has to be a real box.** SAM answers "what object is in this box",
+  so a box covering the frame is the question "what is this scene" — and it
+  answers, faithfully, with the background. A box inflated 15% beyond the object
+  drops the mean IoU from 96.1% to 11.4%; a frame-filling one gives 1.1%. This
+  is why `clampBox` exists, and why it is applied to every automatic proposal.
+  Clamping the guess to at most 85% of the frame is the single change that took
+  the automatic path from 88.6% with six catastrophic failures to 95.4% with
+  none.
+- **Quantisation breaks the encoder, but only in one place.** Int8 across the
+  whole encoder costs more than SAM gains — 94.9% down to 68.4%, worse than
+  GrabCut. The intuition that ViT attention is the fragile part is backwards
+  here: quantising only the `Conv` nodes gives 68.5%, while quantising only the
+  `MatMul` nodes gives **95.4%** at half the file size. The shipped encoder is
+  MatMul-only int8, 13.5MB instead of 27MB, and loses nothing.
+- **An automatic box only needs to be roughly right.** The old segmenter is a
+  poor mask but a fine *guesser*: it rarely misses the object (1.5% of its
+  pixels) even while dragging in half the background (48%), and a bounding box
+  barely notices the second failure. So the thing it is bad at is no longer on
+  the critical path.
+
+### How it runs
+
+The model is split in two on purpose. The encoder depends only on the photo and
+is the expensive half; the decoder depends only on the prompt and takes about
+half a second in WASM. So a photo is encoded once and re-decoded on every box
+drag or brush stroke, which is what makes the editor feel live — GrabCut charged
+a full second for every single edit.
+
+Weights are ~19MB and download in the background; until they land, photos are cut
+out with the fallback and re-cut automatically once the model is ready. If the
+download fails the app keeps working, just less accurately, and says so. Threads
+are off because GitHub Pages cannot send the COOP/COEP headers that
+`SharedArrayBuffer` requires.
+
+`bench/browser.mjs` runs the whole thing in a real Chromium against the shipped
+code, and scores it with the same metrics: 95.2% against the Python reference's
+95.4%, the gap being canvas image decoding versus PIL. Preprocessing is four
+lines of arithmetic that are easy to get quietly wrong, and a half-pixel shift
+does not throw — it just costs IoU.
+
+```
+npm run bench            # score the in-repo methods
+npm run bench -- --dump  # write PNGs + manifest for external tools
+npm run bench:browser    # score the shipped browser path in Chromium
+```
+
+### The fallback: GrabCut
+
 Scoring each pixel on its own — nearest background colour versus nearest
 foreground colour, then threshold — has no notion of a boundary. It speckles
 wherever the two populations overlap and its edges wander with the lighting.
@@ -86,7 +171,7 @@ cut is cheap along object outlines and expensive through flat regions. A
 min-cut solves it globally, so stray pixels never survive. Models and labelling
 are refined against each other for a few rounds.
 
-Measured against the previous per-pixel segmenter:
+Measured against the per-pixel segmenter it replaced:
 
 | Case | before | after |
 |---|---|---|
@@ -213,11 +298,22 @@ result most:
 - **Colours** trades fidelity against cost and strength. More colours track the
   photo more closely but make narrower bands, which forces smaller parts.
 
+## Credits
+
+The segmentation model is **MobileSAM** (Zhang et al.), a distilled Segment
+Anything with a TinyViT image encoder, itself built on Meta AI's **Segment
+Anything**. Both are Apache-2.0. The files in `public/models/` are ONNX exports
+of MobileSAM's published `vit_t` checkpoint, quantised as described above; they
+are redistributions of that work, not something trained here. Inference is
+onnxruntime-web, MIT.
+
 ## Layout
 
 ```
 src/core/lego/       units, colour palette with LDraw codes, part catalogue
-src/core/image/      segmentation, depth estimation, raster helpers
+src/core/image/      segmentation (SAM + GrabCut fallback), depth, raster helpers
+bench/               the segmentation benchmark: scenes, metrics, runners
+public/models/       MobileSAM encoder and decoder, ONNX
 src/core/voxel/      the grid, sampling, colour reduction, hollowing
 src/core/build/      tiling, stability analysis and repair, steps, pipeline
 src/core/export/     LDraw, printable manual, parts list, Bricklink

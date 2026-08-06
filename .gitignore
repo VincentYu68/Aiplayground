@@ -4,3 +4,5 @@ dist/
 .DS_Store
 tsconfig.tsbuildinfo
 dist-single/
+public/ort/
+bench/out/

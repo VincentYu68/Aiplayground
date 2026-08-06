@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { clampBox } from '../src/core/image/sam';
+import { hintsToPoints, proposeBox } from '../src/core/image/propose';
+import { buildCorpus } from '../bench/scenes';
+import { score } from '../bench/metrics';
 import { generateModel } from '../src/core/build/pipeline';
 import { EMPTY, VoxelGrid } from '../src/core/voxel/grid';
 import { hollow, labelComponents, shouldHollow } from '../src/core/voxel/cleanup';
@@ -1024,5 +1028,141 @@ describe('end to end', () => {
     expect(parts.length).toBe(result.totalParts);
     const known = new Set(ALL_PARTS.map((p) => `${p.code}.dat`));
     for (const p of parts) expect(known.has(p!)).toBe(true);
+  });
+});
+
+describe('prompting the segmentation model', () => {
+  it('never proposes a box that fills the frame', () => {
+    // SAM answers "what object is in this box". A box covering everything is
+    // the question "what is this scene", and it answers with the background —
+    // measured at 1.1% IoU, so this is the difference between working and not.
+    const box = clampBox({ x0: 0, y0: 0, x1: 199, y1: 199 }, 200, 200);
+    expect(box.x1 - box.x0).toBeLessThanOrEqual(200 * 0.85);
+    expect(box.y1 - box.y0).toBeLessThanOrEqual(200 * 0.85);
+  });
+
+  it('keeps a sensible box untouched', () => {
+    const original = { x0: 40, y0: 30, x1: 120, y1: 150 };
+    const box = clampBox(original, 200, 200);
+    expect(box).toEqual(original);
+  });
+
+  it('shrinks around the centre rather than the corner', () => {
+    const box = clampBox({ x0: 0, y0: 0, x1: 199, y1: 199 }, 200, 200, 0.5);
+    expect((box.x0 + box.x1) / 2).toBeCloseTo(99.5, 1);
+    expect((box.y0 + box.y1) / 2).toBeCloseTo(99.5, 1);
+  });
+
+  it('keeps a clamped box inside the frame', () => {
+    // A proposal hugging one edge must not be recentred off the image.
+    const box = clampBox({ x0: 150, y0: 150, x1: 199, y1: 199 }, 200, 200, 0.9);
+    expect(box.x0).toBeGreaterThanOrEqual(0);
+    expect(box.y0).toBeGreaterThanOrEqual(0);
+    expect(box.x1).toBeLessThanOrEqual(200);
+    expect(box.y1).toBeLessThanOrEqual(200);
+  });
+
+  it('proposes a box around the object, not the whole picture', () => {
+    const width = 120;
+    const height = 120;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const inside = x >= 40 && x < 80 && y >= 35 && y < 85;
+        rgba[i] = inside ? 200 : 40;
+        rgba[i + 1] = inside ? 60 : 40;
+        rgba[i + 2] = inside ? 60 : 45;
+        rgba[i + 3] = 255;
+      }
+    }
+    const box = proposeBox(rgba, width, height);
+    // Contains the object...
+    expect(box.x0).toBeLessThanOrEqual(41);
+    expect(box.x1).toBeGreaterThanOrEqual(78);
+    expect(box.y0).toBeLessThanOrEqual(36);
+    expect(box.y1).toBeGreaterThanOrEqual(83);
+    // ...without swallowing the frame.
+    expect((box.x1 - box.x0) * (box.y1 - box.y0)).toBeLessThan(width * height * 0.75);
+  });
+
+  it('samples brush strokes into a bounded set of points of both kinds', () => {
+    const width = 100;
+    const height = 100;
+    const hints = new Uint8Array(width * height);
+    for (let y = 10; y < 60; y++) for (let x = 10; x < 60; x++) hints[y * width + x] = 1;
+    for (let y = 70; y < 95; y++) for (let x = 70; x < 95; x++) hints[y * width + x] = 2;
+
+    const points = hintsToPoints(hints, width, height, 5);
+    expect(points.filter((p) => p.label === 1).length).toBeGreaterThan(0);
+    expect(points.filter((p) => p.label === 0).length).toBeGreaterThan(0);
+    expect(points.filter((p) => p.label === 1).length).toBeLessThanOrEqual(5);
+    expect(points.filter((p) => p.label === 0).length).toBeLessThanOrEqual(5);
+    for (const p of points) {
+      expect(hints[p.y * width + p.x]).toBe(p.label === 1 ? 1 : 2);
+    }
+  });
+
+  it('has no points to make when nothing is painted', () => {
+    expect(hintsToPoints(null, 10, 10)).toEqual([]);
+    expect(hintsToPoints(new Uint8Array(100), 10, 10)).toEqual([]);
+  });
+});
+
+describe('the segmentation benchmark', () => {
+  it('builds the same corpus every time', () => {
+    const a = buildCorpus({ width: 64, height: 64 });
+    const b = buildCorpus({ width: 64, height: 64 });
+    expect(a.length).toBe(b.length);
+    expect(Array.from(a[0].rgba)).toEqual(Array.from(b[0].rgba));
+    expect(Array.from(a[0].truth)).toEqual(Array.from(b[0].truth));
+  });
+
+  it('varies the background while holding the object fixed', () => {
+    const scenes = buildCorpus({ width: 64, height: 64 });
+    const mug = scenes.filter((s) => s.object === 'mug');
+    expect(mug.length).toBeGreaterThan(1);
+    // Same object, same truth — only what is behind it changes.
+    expect(Array.from(mug[0].truth)).toEqual(Array.from(mug[1].truth));
+    expect(Array.from(mug[0].rgba)).not.toEqual(Array.from(mug[1].rgba));
+  });
+
+  it('leaves the cast shadow out of the truth mask', () => {
+    // The shadow is offset down and right of the object. If it ever leaked
+    // into the truth, every method would be scored against the wrong answer.
+    const scene = buildCorpus({ width: 96, height: 96 }).find((s) => s.object === 'book')!;
+    let truthCount = 0;
+    for (let i = 0; i < scene.truth.length; i++) truthCount += scene.truth[i];
+    expect(truthCount).toBeGreaterThan(0);
+    expect(truthCount).toBeLessThan(scene.width * scene.height * 0.6);
+  });
+
+  it('scores a perfect mask perfectly and an empty one at zero', () => {
+    const scene = buildCorpus({ width: 64, height: 64 })[0];
+    const perfect = score(scene.truth, scene.truth, scene.width, scene.height);
+    expect(perfect.iou).toBeCloseTo(1, 6);
+    expect(perfect.boundaryF1).toBeCloseTo(1, 6);
+
+    const empty = score(new Uint8Array(scene.truth.length), scene.truth, scene.width, scene.height);
+    expect(empty.iou).toBe(0);
+  });
+
+  it('penalises a two-pixel offset that IoU alone barely notices', () => {
+    // This is the whole reason boundary F1 is reported: an outline that is
+    // wrong everywhere by a couple of pixels still scores well on IoU, and a
+    // couple of pixels is a whole stud once the model is carved.
+    const w = 64;
+    const h = 64;
+    const truth = new Uint8Array(w * h);
+    const shifted = new Uint8Array(w * h);
+    for (let y = 16; y < 48; y++) {
+      for (let x = 16; x < 48; x++) {
+        truth[y * w + x] = 1;
+        shifted[(y + 3) * w + (x + 3)] = 1;
+      }
+    }
+    const s = score(shifted, truth, w, h, 1);
+    expect(s.iou).toBeGreaterThan(0.6);
+    expect(s.boundaryF1).toBeLessThan(0.5);
   });
 });
