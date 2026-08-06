@@ -64,6 +64,36 @@ as intersection-over-union against the cut-out, and mean CIEDE2000 colour error
 against the source pixels. The front-on model preview is drawn at the real
 8 : 3.2 stud-to-plate ratio so the side-by-side comparison is honest.
 
+## Recovering real 3D from several photos
+
+One photograph cannot describe a solid. Extruding its silhouette and rounding
+the result reads correctly from the camera's position and falls apart the
+moment you orbit it — the shape was never there.
+
+Two or more photographs taken around the object do contain the shape.
+Each silhouette back-projects to a generalised cone containing the object, and
+the object lies in the intersection of all of them. That intersection — the
+visual hull — is genuine recovered geometry, not a guess:
+
+| Object | 1 view | 2 views | 4 views | 8 views |
+|---|---|---|---|---|
+| Box, truly 2:1 wide vs deep | 0.96:1 | **2.00:1** | 2.00:1 | — |
+| Cylinder (a circle fills 79% of its bounding square) | 100% | 100% | 82% | **79%** |
+
+Two perpendicular views pin a box exactly; eight views reproduce a circle to
+the decimal. Add angles in the first panel and set each one's direction.
+
+Scale is shared between views by assuming the object is the same height in all
+of them — so shoot from roughly the same distance, upright. Angles are taken
+relative to the first view, so only the angles *between* photos matter.
+Projection is orthographic: recovering perspective would need the camera's
+focal length and distance, which a dropped photo does not carry.
+
+**What it cannot recover** is concavity that never breaks the silhouette — the
+inside of a bowl seen only from outside. That is a property of shape-from-
+silhouette, not of this implementation. With a single photo the app falls back
+to silhouette extrusion and says so in the report.
+
 ## The side the camera never saw
 
 Half of any solid model is a side the photograph does not show, and the
@@ -83,6 +113,11 @@ Two things are therefore kept off the back:
   Carrying that colour inwards — a nearest-boundary feature transform — gives
   the object's own wrap-around colour: the hair around a face, the paint around
   a grille.
+
+These apply to the single-photo fallback. With several views the far side is
+photographed rather than guessed, and each surface voxel takes its colour from
+whichever camera faces it most squarely, resolved through a per-view depth
+buffer so a voxel never takes colour from a camera that could not see it.
 
 `Back of the model` offers **wrap the edges round** (the default), **plain
 back** (one solid colour, cheapest and most honest), and **mirror the front**

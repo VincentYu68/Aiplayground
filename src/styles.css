@@ -417,8 +417,133 @@ h3 {
   font-variant-numeric: tabular-nums;
 }
 
-.back-note {
-  margin: 0 0 2px;
+.back-note,
+.carved-note {
+  margin: 0 0 12px;
+}
+
+.carved-note {
+  color: var(--accent-2);
+  border-left: 2px solid var(--accent-2);
+  padding-left: 9px;
+}
+
+/* ---------- view strip ---------- */
+
+.view-cards {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.view-card {
+  width: 82px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-2);
+  padding: 4px;
+  display: grid;
+  gap: 4px;
+}
+
+.view-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.18);
+}
+
+.view-thumb {
+  position: relative;
+  border: 0;
+  padding: 0;
+  background: #0a0d11;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  aspect-ratio: 1;
+}
+
+.view-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.view-busy {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(13, 16, 20, 0.6);
+  color: var(--accent-2);
+}
+
+.view-meta {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.view-meta select {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 11px;
+  padding: 2px 3px;
+}
+
+.view-remove {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 3px;
+}
+
+.view-remove:hover {
+  color: var(--poor);
+}
+
+.view-card.add {
+  display: grid;
+  place-content: center;
+  gap: 2px;
+  aspect-ratio: 0.82;
+  border-style: dashed;
+  cursor: pointer;
+  text-align: center;
+}
+
+.view-card.add input {
+  display: none;
+}
+
+.view-add-plus {
+  font-size: 20px;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.view-add-label {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.view-note {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  margin: 10px 0 0;
+}
+
+.view-note b {
+  color: var(--text);
 }
 
 .field-hint {

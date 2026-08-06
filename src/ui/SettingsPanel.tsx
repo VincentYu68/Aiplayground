@@ -3,6 +3,8 @@ import type { BackTreatment, BuildOptions, SolidMode } from '../types';
 interface Props {
   options: BuildOptions;
   threshold: number;
+  /** True once the shape is carved from silhouettes rather than guessed. */
+  multiView: boolean;
   onChange: (patch: Partial<BuildOptions>) => void;
   onThresholdChange: (value: number) => void;
   disabled: boolean;
@@ -44,12 +46,28 @@ const BACK_TREATMENTS: Array<{ value: BackTreatment; label: string; hint: string
   },
 ];
 
-export function SettingsPanel({ options, threshold, onChange, onThresholdChange, disabled }: Props) {
+export function SettingsPanel({
+  options,
+  threshold,
+  multiView,
+  onChange,
+  onThresholdChange,
+  disabled,
+}: Props) {
   return (
     <div className="settings">
       <fieldset disabled={disabled}>
         <legend>Shape</legend>
 
+        {multiView && (
+          <p className="field-hint carved-note">
+            The shape is carved from your silhouettes, so the depth guesses below no
+            longer apply. Add more angles to sharpen it.
+          </p>
+        )}
+
+        {!multiView &&
+          SOLID_MODES.length > 0 && (
         <div className="mode-list">
           {SOLID_MODES.map((mode) => (
             <label key={mode.value} className={options.solidMode === mode.value ? 'mode active' : 'mode'}>
@@ -65,6 +83,7 @@ export function SettingsPanel({ options, threshold, onChange, onThresholdChange,
             </label>
           ))}
         </div>
+          )}
 
         <Slider
           label="Width"
@@ -77,7 +96,7 @@ export function SettingsPanel({ options, threshold, onChange, onThresholdChange,
           onChange={(v) => onChange({ studsWide: v })}
         />
 
-        {options.solidMode !== 'revolve' && (
+        {!multiView && options.solidMode !== 'revolve' && (
           <Slider
             label="Thickness"
             value={Math.round(options.depthScale * 100)}
@@ -90,6 +109,7 @@ export function SettingsPanel({ options, threshold, onChange, onThresholdChange,
           />
         )}
 
+        {!multiView && (
         <Slider
           label="Surface relief"
           value={Math.round(options.shadingInfluence * 100)}
@@ -100,7 +120,9 @@ export function SettingsPanel({ options, threshold, onChange, onThresholdChange,
           hint="How much the photo's shading shapes the surface. Raise it for faces and folds, drop it for flat lighting."
           onChange={(v) => onChange({ shadingInfluence: v / 100 })}
         />
+        )}
 
+        {!multiView && (
         <div className="mode-list">
           <p className="field-hint back-note">
             The photo shows one side only. The back is a guess, and this is the guess.
@@ -122,6 +144,20 @@ export function SettingsPanel({ options, threshold, onChange, onThresholdChange,
             </label>
           ))}
         </div>
+        )}
+
+        {multiView && (
+          <Slider
+            label="Carve tolerance"
+            value={options.hullTolerance}
+            min={0}
+            max={2}
+            step={1}
+            suffix=" views"
+            hint="How many photos a piece of the model may be missing from and survive. Raise it if a good part of the object is being carved away by one bad cut-out."
+            onChange={(v) => onChange({ hullTolerance: v })}
+          />
+        )}
 
         <Slider
           label="Cutout sensitivity"

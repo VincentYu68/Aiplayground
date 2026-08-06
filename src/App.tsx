@@ -2,30 +2,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MaskEditor } from './ui/MaskEditor';
 import { SettingsPanel } from './ui/SettingsPanel';
 import { ManualViewer } from './ui/ManualViewer';
+import { ViewStrip } from './ui/ViewStrip';
 import { ExportPanel, FidelityPanel, PartsPanel, StabilityPanel } from './ui/ResultPanels';
-import { loadImageFile, type SourceImage } from './lib/loadImage';
+import { loadImageFile } from './lib/loadImage';
 import { segment } from './core/image/segment';
 import { generateModel } from './core/build/pipeline';
-import { DEFAULT_OPTIONS, type BuildOptions, type BuildResult, type WorkerResponse } from './types';
+import {
+  DEFAULT_OPTIONS,
+  type BuildOptions,
+  type BuildResult,
+  type ViewState,
+  type WorkerResponse,
+} from './types';
 
 /** Set at build time for single-file bundles, which have no worker to load. */
 const SUPPORTS_WORKER =
   typeof Worker !== 'undefined' && import.meta.env.VITE_NO_WORKER !== '1';
 
-interface Rect {
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
-}
+/** Angles offered to a newly added view, in the order they get handed out. */
+const NEXT_ANGLES = [90, 180, 270, 45, 135, 225, 315];
 
 export default function App() {
-  const [source, setSource] = useState<SourceImage | null>(null);
+  const [views, setViews] = useState<ViewState[]>([]);
+  const [activeId, setActiveId] = useState(0);
   const [name, setName] = useState('Model');
-  const [hints, setHints] = useState<Uint8Array | null>(null);
-  const [rect, setRect] = useState<Rect | null>(null);
   const [threshold, setThreshold] = useState(0.5);
-  const [mask, setMask] = useState<Uint8Array | null>(null);
   const [segmenting, setSegmenting] = useState(false);
 
   const [options, setOptions] = useState<BuildOptions>(DEFAULT_OPTIONS);
@@ -37,7 +38,10 @@ export default function App() {
 
   const workerRef = useRef<Worker | null>(null);
   const requestId = useRef(0);
+  const nextId = useRef(1);
   const autoBuild = useRef(false);
+
+  const active = views.find((v) => v.id === activeId) ?? views[0] ?? null;
 
   const onWorkerMessage = useCallback((message: WorkerResponse) => {
     if (message.id !== requestId.current) return;
@@ -73,7 +77,6 @@ export default function App() {
       onWorkerMessage(event.data);
     });
     worker.addEventListener('error', () => {
-      // Fall back for anything queued after this point.
       worker.terminate();
       workerRef.current = null;
     });
@@ -85,61 +88,54 @@ export default function App() {
   }, [onWorkerMessage]);
 
   // --- segmentation --------------------------------------------------------
-  const runSegmentation = useCallback(
-    (src: SourceImage, hintBuffer: Uint8Array | null, box: Rect | null, t: number) => {
-      setSegmenting(true);
-      // Yield a frame so the spinner paints before the synchronous work starts.
-      window.setTimeout(() => {
+  const runSegmentation = useCallback((viewId: number) => {
+    setSegmenting(true);
+    // Yield a frame so the spinner paints before the synchronous work starts.
+    window.setTimeout(() => {
+      setViews((current) => {
+        const view = current.find((v) => v.id === viewId);
+        if (!view) return current;
         try {
-          const { mask: next } = segment(src.rgba, src.width, src.height, {
-            threshold: t,
-            rect: box,
-            hints: hintBuffer,
+          const { mask } = segment(view.source.rgba, view.source.width, view.source.height, {
+            threshold: view.threshold,
+            rect: view.rect,
+            hints: view.hints,
           });
-          setMask(next);
-          setError(null);
+          return current.map((v) => (v.id === viewId ? { ...v, mask } : v));
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e));
+          return current;
         } finally {
           setSegmenting(false);
         }
-      }, 16);
-    },
-    [],
-  );
+      });
+    }, 16);
+  }, []);
 
   const build = useCallback(
-    (src: SourceImage, currentMask: Uint8Array, buildOptions: BuildOptions) => {
+    (ready: ViewState[], buildOptions: BuildOptions) => {
       const id = requestId.current + 1;
       requestId.current = id;
       setError(null);
       setProgress({ stage: 'Starting', fraction: 0 });
 
+      const payload = ready.map((v) => ({
+        rgba: new Uint8ClampedArray(v.source.rgba),
+        mask: new Uint8Array(v.mask!),
+        width: v.source.width,
+        height: v.source.height,
+        azimuth: v.azimuth,
+      }));
+
       const worker = workerRef.current;
       if (worker) {
-        worker.postMessage({
-          id,
-          rgba: new Uint8ClampedArray(src.rgba),
-          width: src.width,
-          height: src.height,
-          mask: new Uint8Array(currentMask),
-          options: buildOptions,
-        });
+        worker.postMessage({ id, views: payload, options: buildOptions });
         return;
       }
 
-      // Main-thread fallback. Yielding first lets the progress bar paint, and
-      // generation is well under a second even for the largest models.
       window.setTimeout(() => {
         try {
-          const result = generateModel(
-            src.rgba,
-            currentMask,
-            src.width,
-            src.height,
-            buildOptions,
-          );
-          onWorkerMessage({ id, type: 'done', result });
+          onWorkerMessage({ id, type: 'done', result: generateModel(payload, buildOptions) });
         } catch (e) {
           onWorkerMessage({
             id,
@@ -152,28 +148,46 @@ export default function App() {
     [onWorkerMessage],
   );
 
-  // Build once automatically as soon as the first mask is ready.
-  useEffect(() => {
-    if (!autoBuild.current || !source || !mask) return;
-    autoBuild.current = false;
-    build(source, mask, options);
-  }, [mask, source, options, build]);
+  const readyViews = useMemo(() => views.filter((v) => v.mask), [views]);
 
-  const onFile = useCallback(
-    async (file: File) => {
+  // Build once automatically as soon as every view has a cut-out.
+  useEffect(() => {
+    if (!autoBuild.current) return;
+    if (views.length === 0 || readyViews.length !== views.length) return;
+    autoBuild.current = false;
+    build(readyViews, options);
+  }, [views, readyViews, options, build]);
+
+  const addView = useCallback(
+    async (file: File, replaceAll: boolean) => {
       try {
         setError(null);
-        const src = await loadImageFile(file);
-        const nextHints = new Uint8Array(src.width * src.height);
-        setSource(src);
-        setName(file.name.replace(/\.[^.]+$/, '') || 'Model');
-        setHints(nextHints);
-        setRect(null);
-        setMask(null);
-        setResult(null);
-        setStep(0);
+        const source = await loadImageFile(file);
+        const id = nextId.current++;
+        setViews((current) => {
+          const base = replaceAll ? [] : current;
+          const taken = new Set(base.map((v) => v.azimuth));
+          const azimuth = base.length === 0 ? 0 : (NEXT_ANGLES.find((a) => !taken.has(a)) ?? 0);
+          const view: ViewState = {
+            id,
+            source,
+            hints: new Uint8Array(source.width * source.height),
+            rect: null,
+            mask: null,
+            azimuth,
+            threshold,
+          };
+          return [...base, view];
+        });
+        setActiveId(id);
+        if (replaceAll) {
+          setName(file.name.replace(/\.[^.]+$/, '') || 'Model');
+          setResult(null);
+          setStep(0);
+        }
         autoBuild.current = true;
-        runSegmentation(src, nextHints, null, threshold);
+        // Segment once the view is in state.
+        window.setTimeout(() => runSegmentation(id), 0);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Could not read that image');
       }
@@ -186,28 +200,38 @@ export default function App() {
     const onPaste = (event: ClipboardEvent) => {
       const item = [...(event.clipboardData?.items ?? [])].find((i) => i.type.startsWith('image/'));
       const file = item?.getAsFile();
-      if (file) void onFile(file);
+      if (file) void addView(file, views.length === 0);
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [onFile]);
+  }, [addView, views.length]);
 
   const patchOptions = useCallback((patch: Partial<BuildOptions>) => {
     setOptions((prev) => ({ ...prev, ...patch }));
     setDirty(true);
   }, []);
 
+  const patchActive = useCallback(
+    (patch: Partial<ViewState>) => {
+      setViews((current) => current.map((v) => (v.id === activeId ? { ...v, ...patch } : v)));
+    },
+    [activeId],
+  );
+
   const onThresholdChange = useCallback(
     (value: number) => {
       setThreshold(value);
-      if (source) runSegmentation(source, hints, rect, value);
+      if (!active) return;
+      patchActive({ threshold: value });
+      window.setTimeout(() => runSegmentation(active.id), 0);
       setDirty(true);
     },
-    [source, hints, rect, runSegmentation],
+    [active, patchActive, runSegmentation],
   );
 
   const busy = progress !== null;
-  const canBuild = Boolean(source && mask && !busy && !segmenting);
+  const allReady = views.length > 0 && readyViews.length === views.length;
+  const canBuild = allReady && !busy && !segmenting;
 
   const buildLabel = useMemo(() => {
     if (busy) return progress?.stage ?? 'Working';
@@ -222,18 +246,18 @@ export default function App() {
           <span className="logo" aria-hidden="true" />
           <div>
             <h1>Brickify</h1>
-            <p>Photo → buildable LEGO model → 3D manual</p>
+            <p>Photos → buildable LEGO model → 3D manual</p>
           </div>
         </div>
-        {source && (
+        {views.length > 0 && (
           <label className="file-button subtle">
-            Change photo
+            Start over
             <input
               type="file"
               accept="image/*"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) void onFile(file);
+                if (file) void addView(file, true);
                 e.target.value = '';
               }}
             />
@@ -247,33 +271,55 @@ export default function App() {
         </div>
       )}
 
-      {!source ? (
-        <Hero onFile={onFile} />
+      {views.length === 0 || !active ? (
+        <Hero onFile={(f) => void addView(f, true)} />
       ) : (
         <main className="layout">
           <aside className="controls">
             <section className="panel">
-              <h2>1. Isolate the object</h2>
-              <MaskEditor
-                source={source}
-                mask={mask}
-                hints={hints ?? new Uint8Array(source.width * source.height)}
-                rect={rect}
-                onPaint={(nextHints, localMask) => {
-                  setHints(nextHints);
-                  if (localMask) setMask(localMask);
+              <h2>1. Photos of the object</h2>
+              <ViewStrip
+                views={views}
+                activeId={active.id}
+                onSelect={setActiveId}
+                onAdd={(file) => void addView(file, false)}
+                onRemove={(id) => {
+                  setViews((current) => current.filter((v) => v.id !== id));
+                  if (id === activeId) setActiveId(views[0]?.id ?? 0);
+                  setDirty(true);
                 }}
-                onRect={(nextRect) => setRect(nextRect)}
-                onCommit={() => runSegmentation(source, hints, rect, threshold)}
+                onAzimuth={(id, azimuth) => {
+                  setViews((current) =>
+                    current.map((v) => (v.id === id ? { ...v, azimuth } : v)),
+                  );
+                  setDirty(true);
+                }}
+              />
+            </section>
+
+            <section className="panel">
+              <h2>2. Isolate the object</h2>
+              <MaskEditor
+                key={active.id}
+                source={active.source}
+                mask={active.mask}
+                hints={active.hints}
+                rect={active.rect}
+                onPaint={(nextHints, localMask) => {
+                  patchActive({ hints: nextHints, ...(localMask ? { mask: localMask } : {}) });
+                }}
+                onRect={(nextRect) => patchActive({ rect: nextRect })}
+                onCommit={() => runSegmentation(active.id)}
               />
               {segmenting && <p className="hint working">Working out the outline…</p>}
             </section>
 
             <section className="panel">
-              <h2>2. Shape the build</h2>
+              <h2>3. Shape the build</h2>
               <SettingsPanel
                 options={options}
-                threshold={threshold}
+                threshold={active.threshold}
+                multiView={views.length >= 2}
                 onChange={patchOptions}
                 onThresholdChange={onThresholdChange}
                 disabled={busy}
@@ -285,7 +331,7 @@ export default function App() {
                 type="button"
                 className={`build-button ${dirty && result ? 'dirty' : ''}`}
                 disabled={!canBuild}
-                onClick={() => source && mask && build(source, mask, options)}
+                onClick={() => build(readyViews, options)}
               >
                 {buildLabel}
               </button>
@@ -302,7 +348,7 @@ export default function App() {
               <>
                 <div className="panel viewer-panel">
                   <div className="viewer-head">
-                    <h2>3. Build it</h2>
+                    <h2>4. Build it</h2>
                     <p className="summary">
                       {result.totalParts} parts &middot; {result.steps.length} steps &middot;{' '}
                       {result.gridX}×{result.gridZ} studs, {result.gridY} plates tall &middot;{' '}
@@ -313,7 +359,7 @@ export default function App() {
                   <ManualViewer result={result} step={step} onStepChange={setStep} />
                 </div>
                 <div className="report-grid">
-                  <FidelityPanel result={result} source={source} />
+                  <FidelityPanel result={result} source={active.source} />
                   <StabilityPanel result={result} />
                   <PartsPanel result={result} />
                   <ExportPanel result={result} name={name} />
@@ -324,7 +370,7 @@ export default function App() {
                 <h2>No model yet</h2>
                 <p>
                   Check the cut-out on the left, then build. Generation runs entirely in your browser —
-                  the photo never leaves this device.
+                  the photos never leave this device.
                 </p>
               </div>
             )}
@@ -354,11 +400,11 @@ function Hero({ onFile }: { onFile: (file: File) => void }) {
       }}
     >
       <div className="hero-inner">
-        <h2>Turn a photo into something you can build</h2>
+        <h2>Turn photos into something you can build</h2>
         <p className="lede">
-          Drop in a photo of an object. Brickify works out its shape, rebuilds it from standard LEGO
-          bricks and plates with properly staggered joints, checks that the result actually holds
-          together, and walks you through assembling it one step at a time.
+          Drop in a photo of an object. Brickify carves out its shape, rebuilds it from standard
+          LEGO bricks and plates with properly staggered joints, checks that the result actually
+          holds together, and walks you through assembling it one step at a time.
         </p>
         <label className="file-button">
           Choose a photo
@@ -376,13 +422,15 @@ function Hero({ onFile }: { onFile: (file: File) => void }) {
 
         <ul className="tips">
           <li>
+            <b>Shoot more than one angle</b> Front and side is the single biggest upgrade — the
+            shape gets carved from both outlines instead of guessed. Add more once you have one.
+          </li>
+          <li>
             <b>Plain background</b> Anything that separates cleanly from the object works best.
           </li>
           <li>
-            <b>Straight on</b> Front-on shots keep proportions honest; angled ones get skewed.
-          </li>
-          <li>
-            <b>Even light</b> Hard shadows read as depth and will show up in the model.
+            <b>Same distance, upright</b> Keep the object the same size in every shot so the
+            outlines line up.
           </li>
         </ul>
       </div>

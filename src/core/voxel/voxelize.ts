@@ -45,7 +45,7 @@ export interface VoxelizeResult {
  * Small enough that it can only ever swap between two colours that were already
  * near-equally good matches.
  */
-const COURSE_COLOR_JITTER = 0.07;
+export const COURSE_COLOR_JITTER = 0.07;
 
 /**
  * How far the front/back colour boundary shifts from course to course.

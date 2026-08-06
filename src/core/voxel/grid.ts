@@ -65,6 +65,48 @@ export class VoxelGrid {
     return g;
   }
 
+  /**
+   * A copy cropped to the material it actually contains.
+   *
+   * The carved grid has to be square in plan so the object fits at any
+   * rotation, which leaves a lot of empty space around a shape that is wider
+   * than it is deep. Cropping matters beyond tidiness: the model's reported
+   * size would otherwise be the grid's, not the object's, and the tiler and
+   * stability passes both scan the full footprint of every layer.
+   */
+  trimmed(): { grid: VoxelGrid; offsetX: number; offsetY: number; offsetZ: number } {
+    let minX = this.sx;
+    let minY = this.sy;
+    let minZ = this.sz;
+    let maxX = -1;
+    let maxY = -1;
+    let maxZ = -1;
+    for (let y = 0; y < this.sy; y++) {
+      for (let z = 0; z < this.sz; z++) {
+        for (let x = 0; x < this.sx; x++) {
+          if (this.cells[this.index(x, y, z)] === EMPTY) continue;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          if (z < minZ) minZ = z;
+          if (z > maxZ) maxZ = z;
+        }
+      }
+    }
+    if (maxX < 0) return { grid: new VoxelGrid(1, 1, 1), offsetX: 0, offsetY: 0, offsetZ: 0 };
+
+    const out = new VoxelGrid(maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1);
+    for (let y = minY; y <= maxY; y++) {
+      for (let z = minZ; z <= maxZ; z++) {
+        for (let x = minX; x <= maxX; x++) {
+          out.set(x - minX, y - minY, z - minZ, this.cells[this.index(x, y, z)]);
+        }
+      }
+    }
+    return { grid: out, offsetX: minX, offsetY: minY, offsetZ: minZ };
+  }
+
   /** True when the cell has at least one empty face neighbour. */
   isSurface(x: number, y: number, z: number): boolean {
     if (!this.filled(x, y, z)) return false;

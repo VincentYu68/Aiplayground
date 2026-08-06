@@ -23,6 +23,7 @@ import { toLdraw } from '../src/core/export/ldraw';
 import { buildPartsList } from '../src/core/export/bom';
 import { distanceTransform, fillHoles, keepLargestComponents } from '../src/core/image/raster';
 import { segment } from '../src/core/image/segment';
+import { carveVisualHull } from '../src/core/multiview/visualHull';
 import { DEFAULT_OPTIONS, type BuildOptions, type Placement } from '../src/types';
 
 /** A synthetic photo: a coloured disc on a flat background. */
@@ -345,7 +346,7 @@ describe('shape modes', () => {
   const { rgba, width, height } = makeTestImage(96, 96);
   const mask = discMask(width, height);
   const run = (patch: Partial<typeof DEFAULT_OPTIONS>) =>
-    generateModel(rgba, mask, width, height, {
+    generateModel([{ rgba, mask, width, height, azimuth: 0 }], {
       ...DEFAULT_OPTIONS,
       studsWide: 16,
       seed: 5,
@@ -407,6 +408,155 @@ describe('shape modes', () => {
   });
 });
 
+describe('multi-view shape recovery', () => {
+  const PX = 180;
+  const W = 200;
+  const H = 260;
+
+  /** A box of half-extents a (x) and b (z), photographed from `azimuth`. */
+  function boxView(a: number, b: number, azimuth: number) {
+    const t = (azimuth * Math.PI) / 180;
+    const halfW = Math.abs(a * Math.cos(t)) + Math.abs(b * Math.sin(t));
+    const rgba = new Uint8ClampedArray(W * H * 4);
+    const mask = new Uint8Array(W * H);
+    const top = (H - PX) / 2;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const inside = y >= top && y < top + PX && Math.abs(x - W / 2) <= halfW * PX;
+        mask[y * W + x] = inside ? 1 : 0;
+        const i = (y * W + x) * 4;
+        rgba[i] = inside ? 200 : 240;
+        rgba[i + 1] = inside ? 60 : 242;
+        rgba[i + 2] = inside ? 60 : 245;
+        rgba[i + 3] = 255;
+      }
+    }
+    return { rgba, mask, width: W, height: H, azimuth };
+  }
+
+  /** Extent of the carved shape at mid height, in studs. */
+  function midSlice(hull: NonNullable<ReturnType<typeof carveVisualHull>>) {
+    const gy = Math.floor(hull.sy / 2);
+    let minX = hull.sx;
+    let maxX = -1;
+    let minZ = hull.sz;
+    let maxZ = -1;
+    let filled = 0;
+    for (let gz = 0; gz < hull.sz; gz++) {
+      for (let gx = 0; gx < hull.sx; gx++) {
+        if (!hull.occupancy[(gy * hull.sz + gz) * hull.sx + gx]) continue;
+        filled++;
+        minX = Math.min(minX, gx);
+        maxX = Math.max(maxX, gx);
+        minZ = Math.min(minZ, gz);
+        maxZ = Math.max(maxZ, gz);
+      }
+    }
+    return { x: maxX - minX + 1, z: maxZ - minZ + 1, filled };
+  }
+
+  it('cannot know the depth of an object from one photo', () => {
+    // The honest baseline: one silhouette extrudes to a slab, so a box twice as
+    // wide as it is deep comes out square. This is the limitation multi-view
+    // exists to remove.
+    const hull = carveVisualHull([boxView(0.3, 0.15, 0)], { studsWide: 24, tolerance: 0 })!;
+    const slice = midSlice(hull);
+    expect(slice.x / slice.z).toBeLessThan(1.2);
+  });
+
+  it('recovers the true proportions from two perpendicular photos', () => {
+    const hull = carveVisualHull([boxView(0.3, 0.15, 0), boxView(0.3, 0.15, 90)], {
+      studsWide: 24,
+      tolerance: 0,
+    })!;
+    const slice = midSlice(hull);
+    // The object really is 2:1.
+    expect(slice.x / slice.z).toBeGreaterThan(1.8);
+    expect(slice.x / slice.z).toBeLessThan(2.2);
+  });
+
+  /**
+   * A cylinder, whose silhouette is the same width from every angle. Note this
+   * is not a rotated box: a box seen from 45 degrees is *wider* than head on,
+   * and that extra width is exactly what stops its corners being carved away.
+   */
+  function cylinderView(r: number, azimuth: number) {
+    const view = boxView(r, r, 0);
+    return { ...view, azimuth };
+  }
+
+  it('rounds a cylinder off as more angles are added', () => {
+    const round = (k: number) => {
+      const views = Array.from({ length: k }, (_, i) => cylinderView(0.25, (i * 180) / k));
+      const hull = carveVisualHull(views, { studsWide: 24, tolerance: 0 })!;
+      const slice = midSlice(hull);
+      return slice.filled / (slice.x * slice.z);
+    };
+    // Two views can only give a square prism, which fills its bounding box.
+    expect(round(2)).toBeGreaterThan(0.95);
+    // Eight views approach a circle, which fills pi/4 = 79% of it.
+    expect(round(8)).toBeLessThan(0.85);
+    expect(round(8)).toBeGreaterThan(0.72);
+  });
+
+  it('is unchanged by views that repeat information already had', () => {
+    // A box looks the same from the front and from behind, so adding the
+    // opposite pair tells the carve nothing new and must not disturb it.
+    const two = carveVisualHull([boxView(0.3, 0.15, 0), boxView(0.3, 0.15, 90)], {
+      studsWide: 24,
+      tolerance: 0,
+    })!;
+    const four = carveVisualHull(
+      [
+        boxView(0.3, 0.15, 0),
+        boxView(0.3, 0.15, 90),
+        boxView(0.3, 0.15, 180),
+        boxView(0.3, 0.15, 270),
+      ],
+      { studsWide: 24, tolerance: 0 },
+    )!;
+    expect(midSlice(four).x).toBe(midSlice(two).x);
+    expect(midSlice(four).z).toBe(midSlice(two).z);
+  });
+
+  it('builds a buildable model from several views', () => {
+    const result = generateModel(
+      [boxView(0.3, 0.15, 0), boxView(0.3, 0.15, 90), boxView(0.3, 0.15, 180)],
+      { ...DEFAULT_OPTIONS, studsWide: 18, seed: 4 },
+    );
+    expect(result.geometry).toBe('visual-hull');
+    expect(result.viewsUsed).toBe(3);
+    expect(result.stability.assemblies).toBe(1);
+    expect(result.stability.score).toBeGreaterThanOrEqual(80);
+
+    // The built model really is half as deep as it is wide. The grid itself is
+    // square — it has to hold the object at any rotation — so this has to be
+    // measured on the parts, not the grid.
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const p of result.placements) {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x + p.w);
+      minZ = Math.min(minZ, p.z);
+      maxZ = Math.max(maxZ, p.z + p.d);
+    }
+    const ratio = (maxX - minX) / (maxZ - minZ);
+    expect(ratio).toBeGreaterThan(1.7);
+    expect(ratio).toBeLessThan(2.3);
+  });
+
+  it('falls back to extrusion when there is only one photo', () => {
+    const result = generateModel([boxView(0.3, 0.15, 0)], {
+      ...DEFAULT_OPTIONS,
+      studsWide: 18,
+    });
+    expect(result.geometry).toBe('extruded');
+    expect(result.viewsUsed).toBe(1);
+  });
+});
+
 describe('the unseen far side', () => {
   /**
    * A head: skin in the middle, hair around the outside, dark eyes. Only the
@@ -445,7 +595,7 @@ describe('the unseen far side', () => {
 
   const head = makeHead(180, 220);
   const run = (backTreatment: BuildOptions['backTreatment']) =>
-    generateModel(head.rgba, head.mask, head.width, head.height, {
+    generateModel([{ rgba: head.rgba, mask: head.mask, width: head.width, height: head.height, azimuth: 0 }], {
       ...DEFAULT_OPTIONS,
       studsWide: 24,
       hollow: false,
@@ -691,7 +841,7 @@ describe('bill of materials', () => {
 describe('end to end', () => {
   const { rgba, width, height } = makeTestImage(128, 128);
   const mask = discMask(width, height);
-  const result = generateModel(rgba, mask, width, height, {
+  const result = generateModel([{ rgba, mask, width, height, azimuth: 0 }], {
     ...DEFAULT_OPTIONS,
     studsWide: 20,
     partsPerStep: 6,
@@ -734,7 +884,7 @@ describe('end to end', () => {
   });
 
   it('is reproducible for a given seed', () => {
-    const again = generateModel(rgba, mask, width, height, {
+    const again = generateModel([{ rgba, mask, width, height, azimuth: 0 }], {
       ...DEFAULT_OPTIONS,
       studsWide: 20,
       partsPerStep: 6,

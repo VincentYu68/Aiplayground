@@ -7,6 +7,8 @@
 
 import { estimateDepth } from '../image/depth';
 import { snapToCourses, voxelize } from '../voxel/voxelize';
+import { voxelizeFromHull } from '../voxel/fromHull';
+import { carveVisualHull, type View } from '../multiview/visualHull';
 import { groundComponents, hollow, removeSmallComponents, shouldHollow } from '../voxel/cleanup';
 import { EMPTY, VoxelGrid } from '../voxel/grid';
 import { tileGrid } from './tiling';
@@ -22,33 +24,76 @@ export type ProgressFn = (stage: string, fraction: number) => void;
 /** Wall thickness left behind when the interior is carved out: two studs. */
 const SHELL_MM = 16;
 
+/**
+ * Build from one or more views.
+ *
+ * With two or more photographs the shape is carved as a visual hull, which is
+ * real recovered geometry. With one, there is nothing to intersect, so it falls
+ * back to extruding the silhouette and guessing the depth — which is why the
+ * report distinguishes the two.
+ */
 export function generateModel(
-  rgba: Uint8ClampedArray,
-  mask: Uint8Array,
-  width: number,
-  height: number,
+  views: View[],
   options: BuildOptions,
   onProgress: ProgressFn = () => {},
 ): BuildResult {
   const started = Date.now();
+  const primary = views[0];
+  const multiView = views.length >= 2;
 
-  onProgress('Estimating depth', 0.05);
-  const depth = estimateDepth(rgba, mask, width, height, {
-    shadingInfluence: options.shadingInfluence,
-  });
+  let voxelResult;
+  if (multiView) {
+    onProgress('Carving the shape from the silhouettes', 0.1);
+    const hull = carveVisualHull(views, {
+      studsWide: options.studsWide,
+      tolerance: options.hullTolerance,
+    });
+    if (!hull) throw new Error('No object found in the photos');
+    onProgress('Colouring from the photos', 0.25);
+    voxelResult = voxelizeFromHull(hull, options.maxColors, options.seed);
+  } else {
+    onProgress('Estimating depth', 0.05);
+    const depth = estimateDepth(primary.rgba, primary.mask, primary.width, primary.height, {
+      shadingInfluence: options.shadingInfluence,
+    });
 
-  onProgress('Sampling onto the stud grid', 0.2);
-  const voxelResult = voxelize(rgba, mask, width, height, depth, {
-    studsWide: options.studsWide,
-    depthScale: options.depthScale,
-    solidMode: options.solidMode,
-    backTreatment: options.backTreatment,
-    maxColors: options.maxColors,
-    wholeCourses: options.resolution === 'bricks',
-    seed: options.seed,
-  });
+    onProgress('Sampling onto the stud grid', 0.2);
+    voxelResult = voxelize(primary.rgba, primary.mask, primary.width, primary.height, depth, {
+      studsWide: options.studsWide,
+      depthScale: options.depthScale,
+      solidMode: options.solidMode,
+      backTreatment: options.backTreatment,
+      maxColors: options.maxColors,
+      wholeCourses: options.resolution === 'bricks',
+      seed: options.seed,
+    });
+  }
 
-  let grid = voxelResult.grid;
+  // Crop away the empty space the carve leaves around a shape that is not
+  // square in plan, so the reported size is the object's rather than the grid's.
+  const trim = voxelResult.grid.trimmed();
+  let grid = trim.grid;
+  // The fidelity masks are indexed against the untrimmed grid, so they have to
+  // be cropped in step or the comparison silently comes apart.
+  const frontMask = cropPlane(
+    voxelResult.frontMask,
+    voxelResult.grid.sx,
+    grid.sx,
+    grid.sy,
+    trim.offsetX,
+    trim.offsetY,
+    0,
+  );
+  const frontColor = cropPlane(
+    voxelResult.frontColor,
+    voxelResult.grid.sx,
+    grid.sx,
+    grid.sy,
+    trim.offsetX,
+    trim.offsetY,
+    EMPTY,
+  ) as Int16Array;
+
   if (options.resolution === 'bricks') grid = snapToCourses(grid);
 
   onProgress('Cleaning up the volume', 0.35);
@@ -90,14 +135,14 @@ export function generateModel(
 
   const fidelity = measureFidelity(
     grid,
-    voxelResult.frontMask,
-    voxelResult.frontColor,
+    frontMask,
+    frontColor,
     voxelResult.palette,
     voxelResult.meanDeltaE,
-    rgba,
-    mask,
-    width,
-    height,
+    primary.rgba,
+    primary.mask,
+    primary.width,
+    primary.height,
   );
 
   onProgress('Done', 1);
@@ -114,8 +159,30 @@ export function generateModel(
     partsList,
     totalParts: totalParts(partsList),
     dimensionsMM: modelDimensionsMM(grid.sx, grid.sy, grid.sz),
+    viewsUsed: views.length,
+    geometry: multiView ? 'visual-hull' : 'extruded',
     elapsedMs: Date.now() - started,
   };
+}
+
+/** Crop an (x, y) plane to match a trimmed grid. */
+function cropPlane<T extends Uint8Array | Int16Array>(
+  source: T,
+  sourceWidth: number,
+  width: number,
+  height: number,
+  offsetX: number,
+  offsetY: number,
+  empty: number,
+): T {
+  const out = new (source.constructor as new (n: number) => T)(width * height);
+  if (empty !== 0) out.fill(empty as never);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      out[y * width + x] = source[(y + offsetY) * sourceWidth + (x + offsetX)];
+    }
+  }
+  return out;
 }
 
 /** Bigger models get fewer randomised restarts so generation stays interactive. */

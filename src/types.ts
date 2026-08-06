@@ -32,6 +32,12 @@ export interface BuildOptions {
   hollow: boolean;
   /** Target number of parts placed per manual step. */
   partsPerStep: number;
+  /**
+   * Views a voxel may be absent from and still survive the carve. 0 is the
+   * strict silhouette intersection; 1 keeps the model whole when one cut-out
+   * clips a limb.
+   */
+  hullTolerance: number;
   /** Deterministic seed for the tiler's randomised restarts. */
   seed: number;
 }
@@ -53,6 +59,7 @@ export const DEFAULT_OPTIONS: BuildOptions = {
   shadingInfluence: 0.25,
   hollow: true,
   partsPerStep: 8,
+  hullTolerance: 0,
   seed: 12345,
 };
 
@@ -147,17 +154,46 @@ export interface BuildResult {
   partsList: PartsListEntry[];
   totalParts: number;
   dimensionsMM: { width: number; height: number; depth: number };
+  /** How many photographs went into the shape. */
+  viewsUsed: number;
+  /** Whether the shape was carved from silhouettes or guessed from one view. */
+  geometry: 'visual-hull' | 'extruded';
   /** Wall-clock time of the generation pass. */
   elapsedMs: number;
+}
+
+/** A rectangle in image pixels. */
+export interface Rect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/** One photograph, with everything needed to cut the object out of it. */
+export interface ViewState {
+  id: number;
+  source: import('./lib/loadImage').SourceImage;
+  /** Per-pixel brush hints: 0 none, 1 keep, 2 remove. */
+  hints: Uint8Array;
+  rect: Rect | null;
+  mask: Uint8Array | null;
+  /** Camera position in degrees around the object's vertical axis. */
+  azimuth: number;
+  /** Cut-out sensitivity for this photo; lighting differs between shots. */
+  threshold: number;
 }
 
 /** Message contract with the pipeline worker. */
 export interface WorkerRequest {
   id: number;
-  rgba: Uint8ClampedArray;
-  width: number;
-  height: number;
-  mask: Uint8Array;
+  views: Array<{
+    rgba: Uint8ClampedArray;
+    mask: Uint8Array;
+    width: number;
+    height: number;
+    azimuth: number;
+  }>;
   options: BuildOptions;
 }
 

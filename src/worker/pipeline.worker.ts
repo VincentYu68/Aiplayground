@@ -12,11 +12,11 @@ import type { WorkerRequest, WorkerResponse } from '../types';
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
 ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
-  const { id, rgba, width, height, mask, options } = event.data;
+  const { id, views, options } = event.data;
   const post = (msg: WorkerResponse) => ctx.postMessage(msg);
 
   try {
-    const result = generateModel(rgba, mask, width, height, options, (stage, fraction) => {
+    const result = generateModel(views, options, (stage, fraction) => {
       post({ id, type: 'progress', stage, fraction });
     });
     post({ id, type: 'done', result });
