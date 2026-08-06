@@ -1,10 +1,12 @@
-import type { BackTreatment, BuildOptions, SolidMode } from '../types';
+import type { BackTreatment, BuildOptions, SegmentEngine, SolidMode } from '../types';
 
 interface Props {
   options: BuildOptions;
   threshold: number;
   /** True once the shape is carved from silhouettes rather than guessed. */
   multiView: boolean;
+  /** Which segmenter cut the active photo out; the slider only steers one. */
+  cutoutEngine: SegmentEngine | null;
   onChange: (patch: Partial<BuildOptions>) => void;
   onThresholdChange: (value: number) => void;
   disabled: boolean;
@@ -50,6 +52,7 @@ export function SettingsPanel({
   options,
   threshold,
   multiView,
+  cutoutEngine,
   onChange,
   onThresholdChange,
   disabled,
@@ -159,16 +162,28 @@ export function SettingsPanel({
           />
         )}
 
-        <Slider
-          label="Cutout sensitivity"
-          value={Math.round(threshold * 100)}
-          min={20}
-          max={80}
-          step={2}
-          suffix="%"
-          hint="Raise it if background is creeping in, lower it if the object is being eaten."
-          onChange={(v) => onThresholdChange(v / 100)}
-        />
+        {/*
+          The recognition model is prompted with a box, not tuned with a
+          threshold — there is no knob here that would do anything. Showing a
+          dead slider would be worse than showing none.
+        */}
+        {cutoutEngine === 'sam' ? (
+          <p className="hint">
+            The outline comes from the object-recognition model. Drag a box around
+            the object, or brush keep/remove, to correct it.
+          </p>
+        ) : (
+          <Slider
+            label="Cutout sensitivity"
+            value={Math.round(threshold * 100)}
+            min={20}
+            max={80}
+            step={2}
+            suffix="%"
+            hint="Raise it if background is creeping in, lower it if the object is being eaten."
+            onChange={(v) => onThresholdChange(v / 100)}
+          />
+        )}
       </fieldset>
 
       <fieldset disabled={disabled}>

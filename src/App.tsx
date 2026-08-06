@@ -444,6 +444,7 @@ export default function App() {
               <SettingsPanel
                 options={options}
                 threshold={active.threshold}
+                cutoutEngine={active.engine}
                 multiView={views.length >= 2}
                 onChange={patchOptions}
                 onThresholdChange={onThresholdChange}
