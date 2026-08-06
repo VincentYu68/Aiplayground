@@ -1,21 +1,33 @@
 /**
  * Foreground extraction.
  *
- * The whole pipeline hinges on knowing which pixels are the object, so this
- * runs a small colour-model classifier rather than a naive chroma key:
+ * The whole pipeline hinges on knowing which pixels are the object, and with
+ * multi-view carving it hinges harder: a mistake in any one view carves real
+ * material out of the finished model, so an error here is not a blemish, it is
+ * a hole.
  *
- *   1. cluster the colours in a border band  -> background model
- *   2. cluster the colours in the centre     -> foreground model
- *   3. score every pixel by relative distance to the two models
- *   4. clean up with morphology, component filtering and hole filling
+ * The work is done by GrabCut — Gaussian mixture colour models refined against
+ * a global min-cut — see `grabcut.ts` for why that beats scoring pixels one at
+ * a time. This module handles everything around it: turning the user's box and
+ * brush strokes into a trimap, running the cut at a resolution that keeps the
+ * app responsive, sharpening the result back to full resolution, and the
+ * morphological tidying afterwards.
  *
- * User-painted hints (from the brush in the mask editor) are treated as hard
- * constraints *and* fed back into the colour models, so two or three strokes
- * fix the cases where automatic separation struggles.
+ * User-painted hints are hard constraints throughout: a stroke is an
+ * instruction, not a suggestion, and it survives every stage.
  */
 
 import { rgbToLab } from '../lego/colors';
 import { close, fillHoles, keepLargestComponents, open, type Mask } from './raster';
+import {
+  DEFINITE_BG,
+  DEFINITE_FG,
+  UNKNOWN,
+  grabCut,
+  refineBoundary,
+  DEFAULT_GRABCUT,
+} from './grabcut';
+import { negLogProb } from './gmm';
 
 export type Hint = 0 | 1 | 2; // 0 = none, 1 = foreground, 2 = background
 
@@ -29,6 +41,10 @@ export interface SegmentOptions {
   /** Drop specks smaller than this fraction of the largest blob. */
   minComponentFraction: number;
   fillInteriorHoles: boolean;
+  /** Boundary-length weight in the cut. */
+  gamma: number;
+  /** Denoising radius used when measuring image edges. */
+  edgeBlur: number;
 }
 
 export const DEFAULT_SEGMENT_OPTIONS: SegmentOptions = {
@@ -37,85 +53,9 @@ export const DEFAULT_SEGMENT_OPTIONS: SegmentOptions = {
   hints: null,
   minComponentFraction: 0.08,
   fillInteriorHoles: true,
+  gamma: DEFAULT_GRABCUT.gamma,
+  edgeBlur: DEFAULT_GRABCUT.edgeBlur,
 };
-
-interface Cluster {
-  lab: [number, number, number];
-  weight: number;
-}
-
-function kmeans(samples: Float32Array, count: number, k: number, iterations = 8): Cluster[] {
-  if (count === 0) return [];
-  const kk = Math.min(k, count);
-  const centers: number[][] = [];
-  // Deterministic spread-out initialisation (k-means++ flavoured, no RNG).
-  centers.push([samples[0], samples[1], samples[2]]);
-  while (centers.length < kk) {
-    let bestIdx = 0;
-    let bestDist = -1;
-    for (let i = 0; i < count; i++) {
-      const l = samples[i * 3];
-      const a = samples[i * 3 + 1];
-      const b = samples[i * 3 + 2];
-      let nearest = Infinity;
-      for (const c of centers) {
-        const d = (l - c[0]) ** 2 + (a - c[1]) ** 2 + (b - c[2]) ** 2;
-        if (d < nearest) nearest = d;
-      }
-      if (nearest > bestDist) {
-        bestDist = nearest;
-        bestIdx = i;
-      }
-    }
-    centers.push([samples[bestIdx * 3], samples[bestIdx * 3 + 1], samples[bestIdx * 3 + 2]]);
-  }
-
-  const assign = new Int32Array(count);
-  for (let it = 0; it < iterations; it++) {
-    for (let i = 0; i < count; i++) {
-      const l = samples[i * 3];
-      const a = samples[i * 3 + 1];
-      const b = samples[i * 3 + 2];
-      let best = 0;
-      let bestD = Infinity;
-      for (let c = 0; c < centers.length; c++) {
-        const cc = centers[c];
-        const d = (l - cc[0]) ** 2 + (a - cc[1]) ** 2 + (b - cc[2]) ** 2;
-        if (d < bestD) {
-          bestD = d;
-          best = c;
-        }
-      }
-      assign[i] = best;
-    }
-    const sums = centers.map(() => [0, 0, 0, 0]);
-    for (let i = 0; i < count; i++) {
-      const s = sums[assign[i]];
-      s[0] += samples[i * 3];
-      s[1] += samples[i * 3 + 1];
-      s[2] += samples[i * 3 + 2];
-      s[3]++;
-    }
-    for (let c = 0; c < centers.length; c++) {
-      if (sums[c][3] > 0) {
-        centers[c] = [sums[c][0] / sums[c][3], sums[c][1] / sums[c][3], sums[c][2] / sums[c][3]];
-      }
-    }
-  }
-
-  const counts = new Array(centers.length).fill(0);
-  for (let i = 0; i < count; i++) counts[assign[i]]++;
-  return centers.map((c, i) => ({ lab: c as [number, number, number], weight: counts[i] / count }));
-}
-
-function minDistance(clusters: Cluster[], l: number, a: number, b: number): number {
-  let best = Infinity;
-  for (const c of clusters) {
-    const d = Math.sqrt((l - c.lab[0]) ** 2 + (a - c.lab[1]) ** 2 + (b - c.lab[2]) ** 2);
-    if (d < best) best = d;
-  }
-  return best === Infinity ? 1e6 : best;
-}
 
 /** Convert an RGBA buffer to a flat Lab buffer (3 floats per pixel). */
 export function toLabBuffer(rgba: Uint8ClampedArray, width: number, height: number): Float32Array {
@@ -131,8 +71,172 @@ export function toLabBuffer(rgba: Uint8ClampedArray, width: number, height: numb
 
 export interface SegmentResult {
   mask: Mask;
-  /** Raw foreground score before thresholding, useful for live slider preview. */
+  /** Foreground confidence per pixel, kept for the editor's preview. */
   score: Float32Array;
+}
+
+/** Longest side the cut runs at. Beyond this it costs more than it adds. */
+const CUT_MAX_DIM = 220;
+
+/** Average Lab over square blocks. */
+function downsampleLab(
+  lab: Float32Array,
+  width: number,
+  height: number,
+  factor: number,
+): { lab: Float32Array; width: number; height: number } {
+  if (factor <= 1) return { lab, width, height };
+  const w = Math.max(1, Math.ceil(width / factor));
+  const h = Math.max(1, Math.ceil(height / factor));
+  const out = new Float32Array(w * h * 3);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let l = 0;
+      let a = 0;
+      let b = 0;
+      let n = 0;
+      for (let sy = y * factor; sy < Math.min(height, (y + 1) * factor); sy++) {
+        for (let sx = x * factor; sx < Math.min(width, (x + 1) * factor); sx++) {
+          const i = sy * width + sx;
+          l += lab[i * 3];
+          a += lab[i * 3 + 1];
+          b += lab[i * 3 + 2];
+          n++;
+        }
+      }
+      const o = (y * w + x) * 3;
+      out[o] = l / Math.max(1, n);
+      out[o + 1] = a / Math.max(1, n);
+      out[o + 2] = b / Math.max(1, n);
+    }
+  }
+  return { lab: out, width: w, height: h };
+}
+
+/**
+ * Turn the box and the brush strokes into the three-way map GrabCut needs.
+ *
+ * Without either, the border band is taken as background and everything else
+ * is left open — the weakest honest assumption available, and enough for the
+ * iteration to bootstrap from.
+ */
+function buildTrimap(
+  width: number,
+  height: number,
+  rect: SegmentOptions['rect'],
+  hints: Uint8Array | null,
+): Uint8Array {
+  const trimap = new Uint8Array(width * height).fill(UNKNOWN);
+
+  if (rect) {
+    const x0 = Math.max(0, Math.min(rect.x0, rect.x1));
+    const x1 = Math.min(width - 1, Math.max(rect.x0, rect.x1));
+    const y0 = Math.max(0, Math.min(rect.y0, rect.y1));
+    const y1 = Math.min(height - 1, Math.max(rect.y0, rect.y1));
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (x < x0 || x > x1 || y < y0 || y > y1) trimap[y * width + x] = DEFINITE_BG;
+      }
+    }
+  } else {
+    const bandX = Math.max(1, Math.round(width * 0.04));
+    const bandY = Math.max(1, Math.round(height * 0.04));
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (x < bandX || y < bandY || x >= width - bandX || y >= height - bandY) {
+          trimap[y * width + x] = DEFINITE_BG;
+        }
+      }
+    }
+  }
+
+  if (hints) {
+    for (let i = 0; i < trimap.length; i++) {
+      if (hints[i] === 1) trimap[i] = DEFINITE_FG;
+      else if (hints[i] === 2) trimap[i] = DEFINITE_BG;
+    }
+  }
+  return trimap;
+}
+
+/** Shrink a trimap, letting any pinned pixel in a block claim the block. */
+function downsampleTrimap(
+  trimap: Uint8Array,
+  width: number,
+  height: number,
+  factor: number,
+  w: number,
+  h: number,
+): Uint8Array {
+  if (factor <= 1) return trimap;
+  const out = new Uint8Array(w * h).fill(UNKNOWN);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let fg = 0;
+      let bg = 0;
+      let total = 0;
+      for (let sy = y * factor; sy < Math.min(height, (y + 1) * factor); sy++) {
+        for (let sx = x * factor; sx < Math.min(width, (x + 1) * factor); sx++) {
+          const v = trimap[sy * width + sx];
+          if (v === DEFINITE_FG) fg++;
+          else if (v === DEFINITE_BG) bg++;
+          total++;
+        }
+      }
+      // A block is only pinned if it is unambiguous; mixed blocks stay open so
+      // the cut can put the boundary inside them.
+      if (fg > 0 && bg === 0) out[y * w + x] = DEFINITE_FG;
+      else if (bg === total && total > 0) out[y * w + x] = DEFINITE_BG;
+    }
+  }
+  return out;
+}
+
+/**
+ * Where the object probably is, before anything has been measured: the middle
+ * of the frame, or the middle of the box if one was drawn. Only a starting
+ * point — the cut is free to move the boundary anywhere.
+ */
+function centralPrior(
+  width: number,
+  height: number,
+  rect: SegmentOptions['rect'],
+  factor: number,
+  hints: Uint8Array | null,
+  fullWidth: number,
+): Uint8Array {
+  const prior = new Uint8Array(width * height);
+  let x0 = 0;
+  let x1 = width - 1;
+  let y0 = 0;
+  let y1 = height - 1;
+  if (rect) {
+    x0 = Math.min(rect.x0, rect.x1) / factor;
+    x1 = Math.max(rect.x0, rect.x1) / factor;
+    y0 = Math.min(rect.y0, rect.y1) / factor;
+    y1 = Math.max(rect.y0, rect.y1) / factor;
+  }
+  const insetX = (x1 - x0) * 0.2;
+  const insetY = (y1 - y0) * 0.2;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const inside =
+        x >= x0 + insetX && x <= x1 - insetX && y >= y0 + insetY && y <= y1 - insetY;
+      prior[y * width + x] = inside ? 1 : 0;
+    }
+  }
+  // A painted "keep" stroke is the strongest evidence available of where the
+  // object is, so it seeds the prior too.
+  if (hints) {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const sy = y * factor;
+        const sx = x * factor;
+        if (hints[sy * fullWidth + sx] === 1) prior[y * width + x] = 1;
+      }
+    }
+  }
+  return prior;
 }
 
 export function segment(
@@ -142,107 +246,93 @@ export function segment(
   optionsIn: Partial<SegmentOptions> = {},
 ): SegmentResult {
   const options = { ...DEFAULT_SEGMENT_OPTIONS, ...optionsIn };
-  const lab = toLabBuffer(rgba, width, height);
   const n = width * height;
-
-  const rect = options.rect ?? { x0: 0, y0: 0, x1: width - 1, y1: height - 1 };
-  const rx0 = Math.max(0, Math.min(rect.x0, rect.x1));
-  const rx1 = Math.min(width - 1, Math.max(rect.x0, rect.x1));
-  const ry0 = Math.max(0, Math.min(rect.y0, rect.y1));
-  const ry1 = Math.min(height - 1, Math.max(rect.y0, rect.y1));
-
+  const lab = toLabBuffer(rgba, width, height);
   const hints = options.hints ?? null;
 
-  // --- gather background samples: the border band, plus any painted hints ---
-  const bandX = Math.max(2, Math.round(width * 0.06));
-  const bandY = Math.max(2, Math.round(height * 0.06));
-  const bgSamples = new Float32Array(n * 3);
-  let bgCount = 0;
-  const pushSample = (buf: Float32Array, count: number, i: number) => {
-    buf[count * 3] = lab[i * 3];
-    buf[count * 3 + 1] = lab[i * 3 + 1];
-    buf[count * 3 + 2] = lab[i * 3 + 2];
-    return count + 1;
-  };
+  const trimap = buildTrimap(width, height, options.rect, hints);
 
+  // Cut at reduced resolution, then sharpen: the colour models do not care
+  // about resolution, and the min-cut is by far the expensive part.
+  const factor = Math.max(1, Math.ceil(Math.max(width, height) / CUT_MAX_DIM));
+  const small = downsampleLab(lab, width, height, factor);
+  const smallTrimap = downsampleTrimap(
+    trimap,
+    width,
+    height,
+    factor,
+    small.width,
+    small.height,
+  );
+
+  // The sensitivity slider biases the fit term: above the midpoint it charges
+  // extra for calling a pixel foreground.
+  const bias = (options.threshold - 0.5) * 12;
+  const cut = grabCut(
+    small.lab,
+    small.width,
+    small.height,
+    smallTrimap,
+    { bias, gamma: options.gamma, edgeBlur: options.edgeBlur },
+    centralPrior(small.width, small.height, options.rect, factor, hints, width),
+  );
+
+  // Back to full resolution, then re-decide the pixels near the boundary
+  // against the full-detail image.
+  let mask: Mask = new Uint8Array(n);
   for (let y = 0; y < height; y++) {
+    const sy = Math.min(small.height - 1, Math.floor(y / factor));
     for (let x = 0; x < width; x++) {
-      const i = y * width + x;
-      const inBorder = x < bandX || y < bandY || x >= width - bandX || y >= height - bandY;
-      const outsideRect = x < rx0 || x > rx1 || y < ry0 || y > ry1;
-      if (inBorder || outsideRect) bgCount = pushSample(bgSamples, bgCount, i);
+      const sx = Math.min(small.width - 1, Math.floor(x / factor));
+      mask[y * width + x] = cut.labels[sy * small.width + sx];
     }
   }
-  if (hints) {
-    for (let i = 0; i < n; i++) if (hints[i] === 2) bgCount = pushSample(bgSamples, bgCount, i);
+  if (factor > 1) {
+    refineBoundary(
+      lab,
+      width,
+      height,
+      mask,
+      trimap,
+      cut.foreground,
+      cut.background,
+      factor + 1,
+      options.gamma,
+    );
   }
 
-  // --- foreground samples: the middle of the rect, plus painted hints ---
-  const fgSamples = new Float32Array(n * 3);
-  let fgCount = 0;
-  const cx0 = rx0 + Math.round((rx1 - rx0) * 0.2);
-  const cx1 = rx1 - Math.round((rx1 - rx0) * 0.2);
-  const cy0 = ry0 + Math.round((ry1 - ry0) * 0.2);
-  const cy1 = ry1 - Math.round((ry1 - ry0) * 0.2);
-  for (let y = cy0; y <= cy1; y++) {
-    for (let x = cx0; x <= cx1; x++) {
-      fgCount = pushSample(fgSamples, fgCount, y * width + x);
-    }
-  }
-  if (hints) {
-    // Painted foreground counts several times over so a couple of strokes can
-    // outvote the much larger automatic sample.
-    for (let i = 0; i < n; i++) {
-      if (hints[i] === 1) {
-        for (let r = 0; r < 6 && fgCount < n; r++) fgCount = pushSample(fgSamples, fgCount, i);
-      }
-    }
-  }
-
-  const bgClusters = kmeans(bgSamples, bgCount, 5);
-  const fgClusters = kmeans(fgSamples, fgCount, 6);
-
+  // Confidence, for the editor to show where the decision was marginal.
   const score = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const l = lab[i * 3];
     const a = lab[i * 3 + 1];
     const b = lab[i * 3 + 2];
-    const dBg = minDistance(bgClusters, l, a, b);
-    const dFg = minDistance(fgClusters, l, a, b);
-    score[i] = dBg / (dBg + dFg + 1e-6);
+    const fg = negLogProbSafe(cut.foreground, l, a, b);
+    const bg = negLogProbSafe(cut.background, l, a, b);
+    score[i] = bg / (fg + bg + 1e-6);
   }
 
-  let mask: Mask = new Uint8Array(n);
-  for (let i = 0; i < n; i++) mask[i] = score[i] >= options.threshold ? 1 : 0;
-
-  // Hard constraints from the brush and the bounding rectangle.
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = y * width + x;
-      if (x < rx0 || x > rx1 || y < ry0 || y > ry1) mask[i] = 0;
-    }
-  }
-  if (hints) {
-    for (let i = 0; i < n; i++) {
-      if (hints[i] === 1) mask[i] = 1;
-      else if (hints[i] === 2) mask[i] = 0;
-    }
-  }
-
+  applyHints(mask, hints);
   mask = open(mask, width, height, 1);
   mask = close(mask, width, height, 2);
   if (options.minComponentFraction > 0) {
     mask = keepLargestComponents(mask, width, height, options.minComponentFraction);
   }
   if (options.fillInteriorHoles) mask = fillHoles(mask, width, height);
-
-  // Re-apply hard constraints; morphology can nibble at painted strokes.
-  if (hints) {
-    for (let i = 0; i < n; i++) {
-      if (hints[i] === 1) mask[i] = 1;
-      else if (hints[i] === 2) mask[i] = 0;
-    }
-  }
+  applyHints(mask, hints);
 
   return { mask, score };
+}
+
+function applyHints(mask: Mask, hints: Uint8Array | null): void {
+  if (!hints) return;
+  for (let i = 0; i < mask.length; i++) {
+    if (hints[i] === 1) mask[i] = 1;
+    else if (hints[i] === 2) mask[i] = 0;
+  }
+}
+
+function negLogProbSafe(gmm: Parameters<typeof negLogProb>[0], l: number, a: number, b: number) {
+  const v = negLogProb(gmm, l, a, b);
+  return Number.isFinite(v) ? v : 69;
 }

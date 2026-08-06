@@ -22,9 +22,8 @@ responsive. Use the normal build anywhere a second file can be served.
 
 ## What it does
 
-1. **Cuts the object out of the photo.** A colour-model classifier separates
-   foreground from background; a brush and a bounding box are there for the
-   photos it gets wrong.
+1. **Cuts the object out of each photo** with GrabCut — see below. A brush and
+   a bounding box are there for the photos it still gets wrong.
 2. **Lifts the silhouette into a solid.** Three modes: a rounded solid that
    bulges front and back, a solid of revolution for anything turned on a lathe,
    and a flat-backed relief. The far side is treated as unknown rather than
@@ -63,6 +62,54 @@ the same thing:
 as intersection-over-union against the cut-out, and mean CIEDE2000 colour error
 against the source pixels. The front-on model preview is drawn at the real
 8 : 3.2 stud-to-plate ratio so the side-by-side comparison is honest.
+
+## Cutting the object out
+
+Scoring each pixel on its own — nearest background colour versus nearest
+foreground colour, then threshold — has no notion of a boundary. It speckles
+wherever the two populations overlap and its edges wander with the lighting.
+Since the shape is now carved from silhouettes, a mistake here is not a
+blemish, it is a hole in the model.
+
+GrabCut minimises one energy over the whole image instead:
+
+```
+E = Σ_p  −log P(colour_p | model of its label)                    (fit)
+  + Σ_pq  γ · exp(−β‖I_p − I_q‖²) · [label_p ≠ label_q]           (edges)
+```
+
+Each label gets a full-covariance Gaussian mixture, so a colour is judged
+against the *shape* of its population rather than a centroid — a shadow on a
+white wall is far from the wall's mean and still obviously wall. The second
+term charges for boundary, discounted where the image has a real edge, so the
+cut is cheap along object outlines and expensive through flat regions. A
+min-cut solves it globally, so stray pixels never survive. Models and labelling
+are refined against each other for a few rounds.
+
+Measured against the previous per-pixel segmenter:
+
+| Case | before | after |
+|---|---|---|
+| Object barely differing from the background | 26.9% | **99.7%** |
+| Object fading toward the background colour | 97.1% | **100%** |
+| Clutter along the frame border | 100% | 100% |
+| Four thin legs | 100% | 100% |
+
+Two things that cost real time to get right, both recorded in the code:
+
+- **The boundary weight has a cliff.** Boundary cost scales with the object's
+  perimeter and fit cost with its area, so above a certain weight "no boundary
+  anywhere" is genuinely the cheaper labelling and the cut returns *everything
+  is background*. Its position moves with image size and contrast, so no fixed
+  weight is safe. The weight is backed off until the cut says something is the
+  object.
+- **Degenerate has to mean nearly-empty, not empty.** At the cliff the cut does
+  not return zero foreground, it returns a single pixel, which sails straight
+  through a `> 0` check and is then erased by the cleanup.
+
+The cut runs at reduced resolution — it is by far the expensive step — and the
+boundary is then re-decided at full resolution against the same energy, since
+colour models do not care about resolution.
 
 ## Recovering real 3D from several photos
 

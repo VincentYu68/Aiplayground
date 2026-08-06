@@ -184,20 +184,43 @@ export interface ViewState {
   threshold: number;
 }
 
-/** Message contract with the pipeline worker. */
-export interface WorkerRequest {
-  id: number;
-  views: Array<{
-    rgba: Uint8ClampedArray;
-    mask: Uint8Array;
-    width: number;
-    height: number;
-    azimuth: number;
-  }>;
-  options: BuildOptions;
-}
+/**
+ * Message contract with the pipeline worker.
+ *
+ * Cutting the object out now costs about a second at full resolution — the
+ * min-cut is not cheap — and it re-runs on every brush stroke, so it belongs
+ * off the main thread just as much as the build does.
+ */
+export type WorkerRequest =
+  | {
+      kind: 'build';
+      id: number;
+      views: Array<{
+        rgba: Uint8ClampedArray;
+        mask: Uint8Array;
+        width: number;
+        height: number;
+        azimuth: number;
+      }>;
+      options: BuildOptions;
+    }
+  | {
+      kind: 'segment';
+      /** Which view this cut-out belongs to. */
+      viewId: number;
+      /** Bumped per request so a stale result can be dropped. */
+      seq: number;
+      rgba: Uint8ClampedArray;
+      width: number;
+      height: number;
+      threshold: number;
+      rect: Rect | null;
+      hints: Uint8Array | null;
+    };
 
 export type WorkerResponse =
   | { id: number; type: 'progress'; stage: string; fraction: number }
   | { id: number; type: 'done'; result: BuildResult }
-  | { id: number; type: 'error'; message: string };
+  | { id: number; type: 'error'; message: string }
+  | { type: 'segmented'; viewId: number; seq: number; mask: Uint8Array }
+  | { type: 'segment-error'; viewId: number; seq: number; message: string };

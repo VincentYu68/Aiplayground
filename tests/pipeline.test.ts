@@ -23,6 +23,7 @@ import { toLdraw } from '../src/core/export/ldraw';
 import { buildPartsList } from '../src/core/export/bom';
 import { distanceTransform, fillHoles, keepLargestComponents } from '../src/core/image/raster';
 import { segment } from '../src/core/image/segment';
+import { MaxFlow } from '../src/core/image/maxflow';
 import { carveVisualHull } from '../src/core/multiview/visualHull';
 import { DEFAULT_OPTIONS, type BuildOptions, type Placement } from '../src/types';
 
@@ -154,6 +155,35 @@ describe('raster helpers', () => {
   });
 });
 
+describe('max-flow', () => {
+  it('finds the min cut of a small graph with a known answer', () => {
+    // Two pixels. Pixel 0 wants foreground (cheap to keep), pixel 1 wants
+    // background, and the link between them is weak enough to break.
+    const flow = new MaxFlow(2, 1);
+    flow.addEdge(0, 1, 1, 1);
+    flow.addTerminals(0, 10, 1);
+    flow.addTerminals(1, 1, 10);
+    const value = flow.compute();
+    // Separating them cuts s->1, 0->t and the link between them: 1 + 1 + 1.
+    // Keeping them together would cost 11 either way.
+    expect(value).toBe(3);
+    const side = flow.sourceSide();
+    expect(side[0]).toBe(1);
+    expect(side[1]).toBe(0);
+  });
+
+  it('keeps neighbours together when the link between them is strong', () => {
+    const flow = new MaxFlow(2, 1);
+    flow.addEdge(0, 1, 100, 100);
+    flow.addTerminals(0, 10, 1);
+    flow.addTerminals(1, 1, 10);
+    flow.compute();
+    const side = flow.sourceSide();
+    // Breaking the pair would cost more than mislabelling one of them.
+    expect(side[0]).toBe(side[1]);
+  });
+});
+
 describe('segmentation', () => {
   it('finds a solid object on a plain background', () => {
     const { rgba, width, height } = makeTestImage(96, 96);
@@ -167,6 +197,97 @@ describe('segmentation', () => {
       if (mask[i] && truth[i]) intersection++;
     }
     expect(intersection / union).toBeGreaterThan(0.85);
+  });
+
+  it('separates an object whose colour barely differs from the background', () => {
+    // The case a per-pixel threshold cannot do: object and wall only a few
+    // levels apart, with noise on both. A global cut holds the boundary
+    // because breaking it costs boundary length.
+    const W = 220;
+    const H = 260;
+    const rgba = new Uint8ClampedArray(W * H * 4);
+    const truth = new Uint8Array(W * H);
+    const noise = (s: number) => ((Math.sin(s * 127.1) * 43758.5453) % 1) * 14;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const inside = Math.hypot((x - W / 2) / (W * 0.26), (y - H / 2) / (H * 0.32)) <= 1;
+        truth[y * W + x] = inside ? 1 : 0;
+        const n = noise(x * 3.1 + y * 7.7);
+        const base = inside ? 196 : 224;
+        const i = (y * W + x) * 4;
+        rgba[i] = base + n;
+        rgba[i + 1] = base + 3 + n;
+        rgba[i + 2] = base + 7 + n;
+        rgba[i + 3] = 255;
+      }
+    }
+
+    const { mask } = segment(rgba, W, H, { threshold: 0.5 });
+    let intersection = 0;
+    let union = 0;
+    for (let i = 0; i < mask.length; i++) {
+      if (mask[i] || truth[i]) union++;
+      if (mask[i] && truth[i]) intersection++;
+    }
+    expect(intersection / union).toBeGreaterThan(0.9);
+  });
+
+  it('does not collapse to an empty mask at any image size', () => {
+    // The boundary term scales with the object's perimeter and the fit term
+    // with its area, so there is an image size at which "everything is
+    // background" becomes the cheaper labelling. It used to return one single
+    // foreground pixel at 300x340 and nothing at all after cleanup.
+    const noise = (s: number) => ((Math.sin(s * 127.1) * 43758.5453) % 1) * 14;
+    for (const [W, H] of [
+      [220, 260],
+      [300, 340],
+      [384, 300],
+    ] as const) {
+      const rgba = new Uint8ClampedArray(W * H * 4);
+      let expected = 0;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const inside =
+            Math.hypot((x - W / 2) / (W * 0.26), (y - H / 2) / (H * 0.32)) <= 1;
+          if (inside) expected++;
+          const n = noise(x * 3.1 + y * 7.7);
+          const base = inside ? 196 : 224;
+          const i = (y * W + x) * 4;
+          rgba[i] = base + n;
+          rgba[i + 1] = base + 3 + n;
+          rgba[i + 2] = base + 7 + n;
+          rgba[i + 3] = 255;
+        }
+      }
+      const { mask } = segment(rgba, W, H, {});
+      const found = mask.reduce((a: number, b: number) => a + b, 0);
+      expect(found).toBeGreaterThan(expected * 0.8);
+      expect(found).toBeLessThan(expected * 1.25);
+    }
+  });
+
+  it('keeps a thin protrusion instead of smoothing it away', () => {
+    const W = 200;
+    const H = 200;
+    const rgba = new Uint8ClampedArray(W * H * 4);
+    const truth = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const body = Math.hypot((x - W * 0.4) / (W * 0.2), (y - H / 2) / (H * 0.26)) <= 1;
+        const handle = x > W * 0.58 && x < W * 0.8 && Math.abs(y - H / 2) < H * 0.04;
+        const inside = body || handle;
+        truth[y * W + x] = inside ? 1 : 0;
+        const i = (y * W + x) * 4;
+        rgba[i] = inside ? 60 : 240;
+        rgba[i + 1] = inside ? 120 : 241;
+        rgba[i + 2] = inside ? 180 : 244;
+        rgba[i + 3] = 255;
+      }
+    }
+    const { mask } = segment(rgba, W, H, { threshold: 0.5 });
+    // The far tip of the handle has to survive.
+    const tip = Math.round(H / 2) * W + Math.round(W * 0.77);
+    expect(mask[tip]).toBe(1);
   });
 
   it('honours painted hints as hard constraints', () => {

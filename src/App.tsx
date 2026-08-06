@@ -27,7 +27,8 @@ export default function App() {
   const [activeId, setActiveId] = useState(0);
   const [name, setName] = useState('Model');
   const [threshold, setThreshold] = useState(0.5);
-  const [segmenting, setSegmenting] = useState(false);
+  /** Cut-outs currently in flight; the outline is expensive enough to show. */
+  const [segmenting, setSegmenting] = useState(0);
 
   const [options, setOptions] = useState<BuildOptions>(DEFAULT_OPTIONS);
   const [result, setResult] = useState<BuildResult | null>(null);
@@ -40,10 +41,25 @@ export default function App() {
   const requestId = useRef(0);
   const nextId = useRef(1);
   const autoBuild = useRef(false);
+  const segmentSeq = useRef(new Map<number, number>());
 
   const active = views.find((v) => v.id === activeId) ?? views[0] ?? null;
 
   const onWorkerMessage = useCallback((message: WorkerResponse) => {
+    if (message.type === 'segmented' || message.type === 'segment-error') {
+      // Drop anything the user has already superseded with a newer stroke.
+      if (segmentSeq.current.get(message.viewId) !== message.seq) return;
+      setSegmenting((busy) => Math.max(0, busy - 1));
+      if (message.type === 'segment-error') {
+        setError(message.message);
+        return;
+      }
+      setViews((current) =>
+        current.map((v) => (v.id === message.viewId ? { ...v, mask: message.mask } : v)),
+      );
+      return;
+    }
+
     if (message.id !== requestId.current) return;
     if (message.type === 'progress') {
       setProgress({ stage: message.stage, fraction: message.fraction });
@@ -88,29 +104,58 @@ export default function App() {
   }, [onWorkerMessage]);
 
   // --- segmentation --------------------------------------------------------
-  const runSegmentation = useCallback((viewId: number) => {
-    setSegmenting(true);
-    // Yield a frame so the spinner paints before the synchronous work starts.
-    window.setTimeout(() => {
+  // The cut-out is a graph cut over every pixel and costs about a second, so it
+  // goes to the worker whenever there is one; on the main thread it would lock
+  // the page on every brush stroke.
+  const runSegmentation = useCallback(
+    (viewId: number) => {
       setViews((current) => {
         const view = current.find((v) => v.id === viewId);
         if (!view) return current;
-        try {
-          const { mask } = segment(view.source.rgba, view.source.width, view.source.height, {
-            threshold: view.threshold,
-            rect: view.rect,
-            hints: view.hints,
-          });
-          return current.map((v) => (v.id === viewId ? { ...v, mask } : v));
-        } catch (e) {
-          setError(e instanceof Error ? e.message : String(e));
-          return current;
-        } finally {
-          setSegmenting(false);
+
+        const seq = (segmentSeq.current.get(viewId) ?? 0) + 1;
+        segmentSeq.current.set(viewId, seq);
+        setSegmenting((busy) => busy + 1);
+
+        const request = {
+          kind: 'segment' as const,
+          viewId,
+          seq,
+          rgba: new Uint8ClampedArray(view.source.rgba),
+          width: view.source.width,
+          height: view.source.height,
+          threshold: view.threshold,
+          rect: view.rect,
+          hints: new Uint8Array(view.hints),
+        };
+
+        const worker = workerRef.current;
+        if (worker) {
+          worker.postMessage(request);
+        } else {
+          window.setTimeout(() => {
+            try {
+              const { mask } = segment(request.rgba, request.width, request.height, {
+                threshold: request.threshold,
+                rect: request.rect,
+                hints: request.hints,
+              });
+              onWorkerMessage({ type: 'segmented', viewId, seq, mask });
+            } catch (e) {
+              onWorkerMessage({
+                type: 'segment-error',
+                viewId,
+                seq,
+                message: e instanceof Error ? e.message : String(e),
+              });
+            }
+          }, 16);
         }
+        return current;
       });
-    }, 16);
-  }, []);
+    },
+    [onWorkerMessage],
+  );
 
   const build = useCallback(
     (ready: ViewState[], buildOptions: BuildOptions) => {
@@ -129,7 +174,7 @@ export default function App() {
 
       const worker = workerRef.current;
       if (worker) {
-        worker.postMessage({ id, views: payload, options: buildOptions });
+        worker.postMessage({ kind: 'build' as const, id, views: payload, options: buildOptions });
         return;
       }
 
@@ -231,7 +276,7 @@ export default function App() {
 
   const busy = progress !== null;
   const allReady = views.length > 0 && readyViews.length === views.length;
-  const canBuild = allReady && !busy && !segmenting;
+  const canBuild = allReady && !busy && segmenting === 0;
 
   const buildLabel = useMemo(() => {
     if (busy) return progress?.stage ?? 'Working';
@@ -311,7 +356,7 @@ export default function App() {
                 onRect={(nextRect) => patchActive({ rect: nextRect })}
                 onCommit={() => runSegmentation(active.id)}
               />
-              {segmenting && <p className="hint working">Working out the outline…</p>}
+              {segmenting > 0 && <p className="hint working">Working out the outline…</p>}
             </section>
 
             <section className="panel">
