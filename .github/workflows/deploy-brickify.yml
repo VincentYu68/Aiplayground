@@ -76,6 +76,13 @@ jobs:
         with:
           path: site
 
+      # Pages queues the deployment on its own backend, and that queue is
+      # slow often enough to matter: one run waited 9m07s against the action's
+      # 10-minute default and the run before it timed out at exactly 10:00
+      # with a green build behind it. Waiting longer costs nothing when the
+      # queue is quick, so give it room rather than publishing on a coin flip.
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          timeout: 1200000
