@@ -9,7 +9,7 @@ server, no upload, and no API key.
 ```bash
 npm install
 npm run dev           # http://localhost:5173
-npm test              # 75 tests over the generator, the cut-out and the shape
+npm test              # 81 tests over the generator, the cut-out and the shape
 npm run build         # static site in dist/
 npm run build:single  # one self-contained page, dist-single/brickify.html
 ```
@@ -235,6 +235,59 @@ projection the silhouette at angle a and at a+180 are mirror images, so they
 constrain the hull identically: front-and-back is, for carving, one photo. (For
 colour it is not — only the back photo can paint the back.)
 
+### Knowing what the object is
+
+Everything above reasons about pixels. SAM knows *that* something is an object;
+it does not know it is a mug. That is where the reconstruction runs out of road:
+from one photograph a cylinder and a box cast exactly the same rectangle, and no
+silhouette analysis can separate them.
+
+How much is that knowledge worth? The benchmark answers it directly. The best
+single fixed depth prior reaches **53.7%** mean 3D IoU; an oracle allowed to pick
+the right prior per object reaches **65.1%**. The gap is concentrated exactly
+where geometry is blind:
+
+| object | oracle pick | oracle | fixed prior | gain |
+|---|---|---|---|---|
+| flat box | 0.4 | 72.0% | 36.6% | **+35.4** |
+| ring | 0.4 | 65.6% | 28.4% | **+37.2** |
+| teapot | 0.4 | 38.6% | 18.4% | **+20.2** |
+| cylinder | revolve | 94.1% | 86.3% | +7.8 |
+| sphere | revolve | 92.6% | 92.2% | +0.4 |
+
+So the app now recognises the object. **MobileNetV2**, 3.6MB quantised, reusing
+the runtime SAM already loads. It is not a large foundation model, but ImageNet-1k
+covers what people photograph on a table — coffee mug, wine bottle, teapot,
+folding chair, vase, binder — and the label is only used to pick among a handful
+of shape archetypes, so "cup" and "coffee mug" disagreeing on the noun does not
+matter.
+
+Three things make it safe to act on:
+
+- **It classifies the cut-out, not the photo.** An ImageNet model handed a whole
+  desk shot answers "desk" — the same failure as SAM with a frame-filling box.
+  The mask is already known by then, so the object's own bounding box is used.
+- **Top-k classes are pooled by archetype**, and an unrecognised class never wins
+  a vote it merely takes part in — no evidence is not evidence for a default.
+- **It abstains.** Below 35% pooled confidence the neutral prior stands. Measured
+  over the 80-scene cut-out corpus: it acts on 58 of 80 images and gets the
+  archetype right on **54 of those 58 (93%)**. The object it is worst at — a toy
+  car — is one it mostly declines to guess at (3 of 10, all wrong), which is the
+  behaviour that matters: confident when right, quiet when not.
+
+The result is a *suggestion*. It sets the shape controls the user could have set
+themselves, says what it saw in plain words ("Looks like a coffee mug — treating
+it as turned about a vertical axis"), and stops guessing the moment the user
+touches those controls.
+
+Two honest limits. This only affects the single-photograph path — with two or
+more views the depth is measured, not guessed, and nothing here is consulted.
+And the +11.4 point figure is the *oracle's* headroom; the classifier captures
+part of it, and how much on real photographs is not something this benchmark can
+answer, because its own renders are too crude for the classifier to read (it
+calls the benchmark cylinder a wardrobe). The recognition accuracy above is
+measured on the more detailed cut-out corpus instead.
+
 ### Two things measured and rejected
 
 Both were built and benchmarked rather than argued about, and neither shipped.
@@ -381,16 +434,17 @@ The segmentation model is **MobileSAM** (Zhang et al.), a distilled Segment
 Anything with a TinyViT image encoder, itself built on Meta AI's **Segment
 Anything**. Both are Apache-2.0. The files in `public/models/` are ONNX exports
 of MobileSAM's published `vit_t` checkpoint, quantised as described above; they
-are redistributions of that work, not something trained here. Inference is
-onnxruntime-web, MIT.
+are redistributions of that work, not something trained here. Object recognition is **MobileNetV2** from the ONNX Model Zoo (Apache-2.0),
+quantised to int8 as published. Inference is onnxruntime-web, MIT.
 
 ## Layout
 
 ```
 src/core/lego/       units, colour palette with LDraw codes, part catalogue
 src/core/image/      segmentation (SAM + GrabCut fallback), depth, raster helpers
+src/core/recognise/  object recognition and the shape prior it implies
 bench/               benchmarks: 2D cut-out scenes, 3D solids, metrics, runners
-public/models/       MobileSAM encoder and decoder, ONNX
+public/models/       MobileSAM encoder and decoder, MobileNet classifier, ONNX
 src/core/voxel/      the grid, sampling, colour reduction, hollowing
 src/core/build/      tiling, stability analysis and repair, steps, pipeline
 src/core/export/     LDraw, printable manual, parts list, Bricklink

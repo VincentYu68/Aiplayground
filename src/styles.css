@@ -1065,3 +1065,17 @@ input[type='range'] {
   line-height: 1.6;
   margin: 0;
 }
+
+/* An inline "that guess was wrong" control inside a hint line. */
+.linky {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent, #4a7fd0);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linky:hover {
+  opacity: 0.8;
+}

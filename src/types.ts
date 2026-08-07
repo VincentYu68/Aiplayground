@@ -211,7 +211,7 @@ export type WorkerRequest =
        * deployed, and this app is mounted in a subdirectory.
        */
       kind: 'configure';
-      urls: { runtime: string; encoder: string; decoder: string };
+      urls: { runtime: string; encoder: string; decoder: string; classifier: string };
     }
   | {
       kind: 'build';
@@ -255,6 +255,14 @@ export type WorkerResponse =
       box: Rect | null;
     }
   | { type: 'segment-error'; viewId: number; seq: number; message: string }
+  | {
+      type: 'recognised';
+      viewId: number;
+      seq: number;
+      label: string;
+      confidence: number;
+      prior: import('./core/recognise/shapePrior').ShapePrior | null;
+    }
   | { type: 'model-progress'; loaded: number; total: number }
   | { type: 'model-ready' }
   // Not an error the user has to act on: the app keeps working on the old

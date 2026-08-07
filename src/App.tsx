@@ -38,6 +38,11 @@ export default function App() {
     state: 'loading' | 'ready' | 'unavailable';
     fraction: number;
   }>({ state: 'loading', fraction: 0 });
+  /** What the classifier thinks the object is, and the prior it implied. */
+  const [recognised, setRecognised] = useState<{ label: string; confidence: number } | null>(null);
+  const [priorNote, setPriorNote] = useState<string | null>(null);
+  /** Once the user adjusts the shape controls, stop guessing for them. */
+  const shapeTouched = useRef(false);
 
   const [options, setOptions] = useState<BuildOptions>(DEFAULT_OPTIONS);
   const [result, setResult] = useState<BuildResult | null>(null);
@@ -65,6 +70,24 @@ export default function App() {
     }
     if (message.type === 'model-unavailable') {
       setModel({ state: 'unavailable', fraction: 0 });
+      return;
+    }
+
+    if (message.type === 'recognised') {
+      if (segmentSeq.current.get(message.viewId) !== message.seq) return;
+      setRecognised({ label: message.label, confidence: message.confidence });
+      // The guess sets the shape controls the user could have set themselves,
+      // and only until they touch them — after that it would be overriding a
+      // decision rather than saving one.
+      if (message.prior && !shapeTouched.current) {
+        setOptions((current) => ({
+          ...current,
+          solidMode: message.prior!.solidMode,
+          depthScale: message.prior!.depthScale,
+        }));
+        setPriorNote(message.prior.explanation);
+        setDirty(true);
+      }
       return;
     }
 
@@ -138,6 +161,7 @@ export default function App() {
         runtime: new URL('ort/', document.baseURI).href,
         encoder: new URL('models/mobilesam-encoder.onnx', document.baseURI).href,
         decoder: new URL('models/mobilesam-decoder.onnx', document.baseURI).href,
+        classifier: new URL('models/mobilenet-classifier.onnx', document.baseURI).href,
       },
     });
     return () => {
@@ -316,6 +340,12 @@ export default function App() {
   }, [addView, views.length]);
 
   const patchOptions = useCallback((patch: Partial<BuildOptions>) => {
+    // Touching the shape controls retires the automatic guess: after this the
+    // user has an opinion, and a later photo must not quietly overrule it.
+    if (patch.solidMode !== undefined || patch.depthScale !== undefined) {
+      shapeTouched.current = true;
+      setPriorNote(null);
+    }
     setOptions((prev) => ({ ...prev, ...patch }));
     setDirty(true);
   }, []);
@@ -441,6 +471,31 @@ export default function App() {
 
             <section className="panel">
               <h2>3. Shape the build</h2>
+              {priorNote && (
+                <p className="hint">
+                  {priorNote}{' '}
+                  <button
+                    type="button"
+                    className="linky"
+                    onClick={() => {
+                      shapeTouched.current = true;
+                      setPriorNote(null);
+                      patchOptions({
+                        solidMode: DEFAULT_OPTIONS.solidMode,
+                        depthScale: DEFAULT_OPTIONS.depthScale,
+                      });
+                    }}
+                  >
+                    Not that? Reset the shape.
+                  </button>
+                </p>
+              )}
+              {!priorNote && recognised && recognised.confidence >= 0.2 && (
+                <p className="hint">
+                  Looks like a {recognised.label}, but not confidently enough to
+                  change the shape settings.
+                </p>
+              )}
               <SettingsPanel
                 options={options}
                 threshold={active.threshold}

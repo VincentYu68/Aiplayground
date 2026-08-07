@@ -12,3 +12,10 @@ Meta AI's Segment Anything (<https://github.com/facebookresearch/segment-anythin
 
 Both are licensed Apache-2.0. These exports are redistributions of that work;
 no model was trained in this project.
+
+## Object recognition
+
+`mobilenet-classifier.onnx` is MobileNetV2 (int8) from the ONNX Model Zoo,
+<https://github.com/onnx/models>, Apache-2.0, redistributed unmodified. It is
+used only to choose among a few shape archetypes for the single-photograph
+depth prior; see the README.

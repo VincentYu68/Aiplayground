@@ -22,6 +22,8 @@ import {
   samReady,
   type Embedding,
 } from '../core/image/sam';
+import { loadRecogniser, recognise, recogniserReady } from '../core/recognise/recognise';
+import { shapePriorFor } from '../core/recognise/shapePrior';
 import type { Rect, SegmentEngine, WorkerRequest, WorkerResponse } from '../types';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
@@ -108,6 +110,24 @@ async function handleSegment(request: Extract<WorkerRequest, { kind: 'segment' }
       outcome = segmentWithGrabCut(request);
     }
     post({ type: 'segmented', viewId, seq, mask: outcome.mask, engine, box: outcome.box });
+
+    // Recognising the object needs the cut-out — an ImageNet model handed a
+    // whole desk shot answers "desk" — so it runs after, not in parallel.
+    if (recogniserReady()) {
+      try {
+        const what = await recognise(request.rgba, request.width, request.height, outcome.mask);
+        post({
+          type: 'recognised',
+          viewId,
+          seq,
+          label: what.label,
+          confidence: what.labelConfidence,
+          prior: shapePriorFor(what),
+        });
+      } catch {
+        // A failed guess is not worth surfacing; the defaults still apply.
+      }
+    }
   } catch (error) {
     post({
       type: 'segment-error',
@@ -122,6 +142,9 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
 
   if (request.kind === 'configure') {
+    // The classifier is small and independent; a failure to load it must not
+    // stop the segmentation model from arriving.
+    void loadRecogniser({ classifier: request.urls.classifier }).catch(() => {});
     loadSam(request.urls, (loaded, total) => post({ type: 'model-progress', loaded, total }))
       .then(() => post({ type: 'model-ready' }))
       .catch((error) =>

@@ -4,6 +4,8 @@ import { hintsToPoints, proposeBox } from '../src/core/image/propose';
 import { buildCorpus } from '../bench/scenes';
 import { score } from '../bench/metrics';
 import { azimuthsFor, renderView, SOLIDS } from '../bench/shapes3d';
+import { ARCHETYPE_BY_CLASS, CLASS_NAMES } from '../src/core/recognise/imagenet';
+import { shapePriorFor } from '../src/core/recognise/shapePrior';
 import { generateModel } from '../src/core/build/pipeline';
 import { EMPTY, VoxelGrid } from '../src/core/voxel/grid';
 import { hollow, labelComponents, shouldHollow } from '../src/core/voxel/cleanup';
@@ -1202,5 +1204,68 @@ describe('depth from a single photograph', () => {
     // A cylinder is as deep as it is wide; both should get close, but only the
     // two-view answer is measured rather than assumed.
     expect(two.gridZ / two.gridX).toBeGreaterThan(0.85);
+  });
+});
+
+describe('recognising what the object is', () => {
+  const indexOf = (name: string) => CLASS_NAMES.indexOf(name);
+
+  it('maps everyday objects to the shape they actually are', () => {
+    expect(ARCHETYPE_BY_CLASS[indexOf('coffee mug')]).toBe('T');
+    expect(ARCHETYPE_BY_CLASS[indexOf('wine bottle')]).toBe('T');
+    expect(ARCHETYPE_BY_CLASS[indexOf('vase')]).toBe('T');
+    expect(ARCHETYPE_BY_CLASS[indexOf('binder')]).toBe('F');
+    expect(ARCHETYPE_BY_CLASS[indexOf('envelope')]).toBe('F');
+    expect(ARCHETYPE_BY_CLASS[indexOf('ping-pong ball')]).toBe('R');
+    expect(ARCHETYPE_BY_CLASS[indexOf('teddy')]).toBe('R');
+    expect(ARCHETYPE_BY_CLASS[indexOf('folding chair')]).toBe('B');
+  });
+
+  it('covers every class exactly once', () => {
+    expect(ARCHETYPE_BY_CLASS.length).toBe(1000);
+    expect(CLASS_NAMES.length).toBe(1000);
+    expect([...new Set(ARCHETYPE_BY_CLASS)].sort().join('')).toBe('BFRTU');
+  });
+
+  it('treats animals as rounded bodies rather than slabs', () => {
+    // ImageNet is ordered by wnid and the first 398 classes are animals; a
+    // photographed animal or soft toy is round, never flat.
+    for (const name of ['tench', 'goldfish', 'tabby', 'Siamese cat']) {
+      const i = indexOf(name);
+      if (i >= 0) expect(ARCHETYPE_BY_CLASS[i]).toBe('R');
+    }
+  });
+
+  it('turns a confident recognition into a turned profile', () => {
+    const prior = shapePriorFor({
+      label: 'coffee mug',
+      labelConfidence: 0.7,
+      archetype: 'T',
+      confidence: 0.8,
+    });
+    expect(prior?.solidMode).toBe('revolve');
+    expect(prior?.explanation).toContain('coffee mug');
+  });
+
+  it('makes a flat object flat, which is where a geometric prior is worst', () => {
+    const prior = shapePriorFor({
+      label: 'binder',
+      labelConfidence: 0.5,
+      archetype: 'F',
+      confidence: 0.6,
+    });
+    expect(prior?.depthScale).toBeLessThan(0.5);
+  });
+
+  it('declines to guess when it is not sure', () => {
+    // An unconfident classifier must leave the neutral prior alone rather than
+    // swap in a confident-sounding wrong one.
+    expect(
+      shapePriorFor({ label: 'x', labelConfidence: 0.1, archetype: 'T', confidence: 0.2 }),
+    ).toBeNull();
+    expect(
+      shapePriorFor({ label: 'x', labelConfidence: 0.9, archetype: 'U', confidence: 0.9 }),
+    ).toBeNull();
+    expect(shapePriorFor(null)).toBeNull();
   });
 });
