@@ -3,6 +3,7 @@ import { clampBox } from '../src/core/image/sam';
 import { hintsToPoints, proposeBox } from '../src/core/image/propose';
 import { buildCorpus } from '../bench/scenes';
 import { score } from '../bench/metrics';
+import { azimuthsFor, renderView, SOLIDS } from '../bench/shapes3d';
 import { generateModel } from '../src/core/build/pipeline';
 import { EMPTY, VoxelGrid } from '../src/core/voxel/grid';
 import { hollow, labelComponents, shouldHollow } from '../src/core/voxel/cleanup';
@@ -1164,5 +1165,42 @@ describe('the segmentation benchmark', () => {
     const s = score(shifted, truth, w, h, 1);
     expect(s.iou).toBeGreaterThan(0.6);
     expect(s.boundaryF1).toBeLessThan(0.5);
+  });
+});
+
+describe('depth from a single photograph', () => {
+  it('makes a sphere about as deep as it is wide', () => {
+    // The old default made every single-view model roughly half as deep as it
+    // should be: correct head-on, wrong the moment you orbited it. One photo
+    // cannot measure depth, so this is a prior — but it has to be a sane one.
+    const solid = SOLIDS.find((s) => s.name === 'sphere')!;
+    const result = generateModel([renderView(solid, 0)], {
+      ...DEFAULT_OPTIONS,
+      studsWide: 16,
+      hollow: false,
+    });
+    const ratio = result.gridZ / result.gridX;
+    expect(ratio).toBeGreaterThan(0.8);
+    expect(ratio).toBeLessThanOrEqual(1.05);
+  });
+
+  it('spreads benchmark views over half a turn, not a full one', () => {
+    // Under orthographic projection a silhouette and its opposite are mirror
+    // images, so 0 and 180 constrain the hull identically — a pair of views
+    // spread over 360 degrees carries the information of one.
+    expect(azimuthsFor(2)).toEqual([0, 90]);
+    expect(azimuthsFor(4)).toEqual([0, 45, 90, 135]);
+  });
+
+  it('carves a genuinely deeper solid from two views than it guesses from one', () => {
+    const solid = SOLIDS.find((s) => s.name === 'cylinder')!;
+    const opts = { ...DEFAULT_OPTIONS, studsWide: 14, hollow: false };
+    const one = generateModel([renderView(solid, 0)], opts);
+    const two = generateModel(azimuthsFor(2).map((a) => renderView(solid, a)), opts);
+    expect(one.geometry).toBe('extruded');
+    expect(two.geometry).toBe('visual-hull');
+    // A cylinder is as deep as it is wide; both should get close, but only the
+    // two-view answer is measured rather than assumed.
+    expect(two.gridZ / two.gridX).toBeGreaterThan(0.85);
   });
 });

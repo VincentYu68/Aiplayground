@@ -44,7 +44,14 @@ export interface BuildOptions {
 
 export const DEFAULT_OPTIONS: BuildOptions = {
   studsWide: 32,
-  depthScale: 0.55,
+  // "As deep as it is wide": assume a roughly circular cross-section. One
+  // photograph cannot show depth, so this is a prior, and it is the best fixed
+  // prior available — measured against known solids in bench/run3d.ts, mean 3D
+  // IoU by this value is 40.9% at 0.4, 43.8% at 0.55 (the old default), 51.9%
+  // at 0.85 and 53.0% at 1.0. The old value made everything about half as deep
+  // as it should be, which is why single-view models read correctly head-on and
+  // fell apart the moment you orbited them.
+  depthScale: 1.0,
   solidMode: 'symmetric',
   // A photo says nothing about the far side. Wrapping the silhouette colours
   // round is a guess; mirroring the front is a confident fabrication, and a

@@ -9,7 +9,7 @@ server, no upload, and no API key.
 ```bash
 npm install
 npm run dev           # http://localhost:5173
-npm test              # 72 tests over the generator and the cut-out
+npm test              # 75 tests over the generator, the cut-out and the shape
 npm run build         # static site in dist/
 npm run build:single  # one self-contained page, dist-single/brickify.html
 ```
@@ -143,9 +143,10 @@ lines of arithmetic that are easy to get quietly wrong, and a half-pixel shift
 does not throw — it just costs IoU.
 
 ```
-npm run bench            # score the in-repo methods
+npm run bench            # score the cut-out methods
 npm run bench -- --dump  # write PNGs + manifest for external tools
 npm run bench:browser    # score the shipped browser path in Chromium
+npm run bench:3d         # score the reconstructed volume against known solids
 ```
 
 ### The fallback: GrabCut
@@ -195,6 +196,82 @@ Two things that cost real time to get right, both recorded in the code:
 The cut runs at reduced resolution — it is by far the expensive step — and the
 boundary is then re-decided at full resolution against the same energy, since
 colour models do not care about resolution.
+
+## How good is the 3D, actually
+
+`bench/run3d.ts` renders known solids — sphere, box, cylinder, mug, chair,
+dumbbell, stair, torus, teapot — from N angles using the pipeline's own
+projection convention, runs the real pipeline, and scores the *volume* it
+produces against the solid it came from.
+
+| photos | mean 3D IoU | what the app used to report |
+|---|---|---|
+| 1 | 53.0% | 97.7% silhouette match |
+| 2 | 70.8% | 97.3% |
+| 4 | 76.6% | 97.0% |
+| 8 | 78.1% | 97.0% |
+
+That gap is the whole problem, and it is now stated in the UI rather than left
+to be discovered by orbiting the model: matching the outline of the one photo
+you framed is not evidence about depth. A flat slab scores 97% on silhouette.
+
+Three things came out of building this.
+
+**The single-view depth prior was wrong by a factor of two.** `depthScale`
+defaulted to 0.55 — peak thickness as a fraction of width — which made a sphere
+just over half as deep as it is wide. Measured across the corpus, mean 3D IoU
+runs 40.9% at 0.4, 43.8% at 0.55, 51.9% at 0.85 and 53.0% at 1.0. The default is
+now 1.0: assume a roughly circular cross-section, "as deep as it is wide".
+
+**A cylinder and a box cast the same silhouette.** From one photograph they are
+the same rectangle, and no geometric rule can separate them — the change above
+buys 9 points by picking the better prior, not by learning anything. Rounded
+objects gain a lot (sphere 54.9% → 92.2%, cylinder 51.1% → 86.3%); boxy ones
+lose (box 62.6% → 36.6%). Only recognising the object could do better, which is
+what the next section is about.
+
+**Views should be spread over half a turn, not a whole one.** Under orthographic
+projection the silhouette at angle a and at a+180 are mirror images, so they
+constrain the hull identically: front-and-back is, for carving, one photo. (For
+colour it is not — only the back photo can paint the back.)
+
+### Two things measured and rejected
+
+Both were built and benchmarked rather than argued about, and neither shipped.
+
+**Monocular depth estimation.** MiDaS v2.1-small scores a mean correlation of
+about 0.2 against true depth on these renders, with several views *anti*
+correlated; MiDaS v3.1 swin2-tiny (42M params) reaches 0.43, still with a box
+face coming out backwards. Carving geometry with a depth map that wrong would
+lose more than it gained. The honest caveat: these are synthetic renders on a
+flat background, which is out of distribution for models trained on photographs,
+so this is evidence about *this benchmark*, not a general verdict.
+
+**Photo-consistency carving (space carving).** The principled attack on phantom
+volume: a voxel in empty space is seen as different colours by different
+cameras, a voxel on a real surface is not. Implemented with visibility recomputed
+per pass and silhouette protection, then swept over the disagreement threshold:
+
+| CIEDE2000 tolerance | off | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|
+| 2 views | 70.8% | 55.5% | 55.5% | 60.4% | 65.3% |
+| 4 views | 76.6% | 77.1% | 77.5% | 77.5% | 77.1% |
+| 8 views | 78.1% | 70.0% | 74.9% | 76.1% | 76.7% |
+
+It does remove phantom volume — at 8 views the excess drops from 53% to 36% —
+but it removes real material at the same rate, and it is badly harmful at two
+views. A knob that costs a pass over the grid and makes the common case worse
+is not worth shipping, so it was taken out.
+
+### What is still wrong
+
+The mean hides two shapes. At eight views: mug 37%, teapot 24%, with the teapot
+carrying 316% more volume than it should. Everything else is 84–98%. Both fail
+the same way — a visual hull cannot see a hollow nothing looks into (a mug's
+bore) and cannot remove the space trapped between parts that stick out (a
+spout and a handle both sweep wedges, and every camera sees material in the slab
+between them). Fixing that needs a method that knows what the object is, not a
+better silhouette.
 
 ## Recovering real 3D from several photos
 
@@ -312,7 +389,7 @@ onnxruntime-web, MIT.
 ```
 src/core/lego/       units, colour palette with LDraw codes, part catalogue
 src/core/image/      segmentation (SAM + GrabCut fallback), depth, raster helpers
-bench/               the segmentation benchmark: scenes, metrics, runners
+bench/               benchmarks: 2D cut-out scenes, 3D solids, metrics, runners
 public/models/       MobileSAM encoder and decoder, ONNX
 src/core/voxel/      the grid, sampling, colour reduction, hollowing
 src/core/build/      tiling, stability analysis and repair, steps, pipeline

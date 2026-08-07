@@ -33,6 +33,7 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
   const deltaE = result.fidelity.meanDeltaE;
   const colourVerdict =
     deltaE < 5 ? 'very close' : deltaE < 10 ? 'close' : deltaE < 18 ? 'recognisable' : 'loose';
+  const shape = describeShape(result.viewsUsed);
 
   return (
     <section className="panel">
@@ -51,7 +52,16 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
         <div>
           <dt>Silhouette match</dt>
           <dd>{iou}%</dd>
-          <p>Overlap between the model's outline and the object's.</p>
+          <p>
+            Overlap between the model's outline and the object's, <em>in the photo
+            you framed</em>. It says nothing about the shape side-on — a flat slab
+            scores full marks here.
+          </p>
+        </div>
+        <div>
+          <dt>Shape</dt>
+          <dd>{shape.headline}</dd>
+          <p>{shape.detail}</p>
         </div>
         <div>
           <dt>Colour error</dt>
@@ -63,6 +73,37 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
       </dl>
     </section>
   );
+}
+
+/**
+ * What the geometry is actually worth.
+ *
+ * The silhouette number sits right next to this and routinely reads 97% while
+ * the solid behind it is less than half right, because matching the outline of
+ * the one photo you were given is not evidence about depth. The figures quoted
+ * here are mean 3D IoU against known solids from bench/run3d.ts, so the panel
+ * reports the shape's accuracy rather than implying it from the outline's.
+ */
+function describeShape(views: number): { headline: string; detail: string } {
+  if (views <= 1) {
+    return {
+      headline: 'Guessed',
+      detail:
+        'One photo cannot show depth, so the model assumes the object is about as deep as it is wide. Against known solids that recovers roughly half the true volume. A second photo from the side takes it to about 71%.',
+    };
+  }
+  if (views === 2) {
+    return {
+      headline: 'Carved from 2 views',
+      detail:
+        'The shape is the intersection of both outlines — a real solid, about 71% of the true volume on the benchmark. Two more angles take it to roughly 77%.',
+    };
+  }
+  return {
+    headline: `Carved from ${views} views`,
+    detail:
+      'About 77% of the true volume on the benchmark. What silhouettes can never recover is hollows nothing sees — the inside of a mug — and the space trapped between parts that stick out, like a spout and a handle.',
+  };
 }
 
 export function StabilityPanel({ result }: { result: BuildResult }) {

@@ -16,7 +16,8 @@
     "prebuild": "node scripts/sync-ort.mjs",
     "pretest": "node scripts/sync-ort.mjs",
     "bench": "vite-node bench/run.ts",
-    "bench:browser": "node bench/browser.mjs"
+    "bench:browser": "node bench/browser.mjs",
+    "bench:3d": "vite-node bench/run3d.ts"
   },
   "dependencies": {
     "onnxruntime-web": "^1.27.0",
