@@ -40,6 +40,8 @@ export interface Solid {
 
 const between = (v: number, lo: number, hi: number) => v >= lo && v <= hi;
 
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
 /** Distance to the axis of an upright cylinder. */
 const radial = (x: number, z: number) => Math.hypot(x, z);
 
@@ -185,6 +187,150 @@ const teapot: Solid = {
   colour: (_x, y) => (y > 0.7 ? { r: 216, g: 216, b: 220 } : { r: 60, g: 150, b: 170 }),
 };
 
+
+// ---------------------------------------------------------------------------
+// the cases that actually matter
+//
+// The solids above are geometric primitives, and a method that handles a sphere
+// and a cylinder has proved nothing about the things people photograph. These
+// four are the stated targets: a person, a car, a bag and a drawing. They break
+// different assumptions — a person is articulated and thin-limbed, a car is
+// long and wheeled, a bag is soft with a handle loop, and a drawing is not a
+// solid at all.
+// ---------------------------------------------------------------------------
+
+/** Distance to a capsule (a segment with thickness) — limbs and straps. */
+function capsule(
+  x: number,
+  y: number,
+  z: number,
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number,
+  r: number,
+): boolean {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const dz = bz - az;
+  const len2 = dx * dx + dy * dy + dz * dz;
+  const t = len2 === 0 ? 0 : clamp01(((x - ax) * dx + (y - ay) * dy + (z - az) * dz) / len2);
+  return Math.hypot(x - (ax + t * dx), y - (ay + t * dy), z - (az + t * dz)) <= r;
+}
+
+/** A standing figure: articulated, thin limbs, and a gap between the legs. */
+const person: Solid = {
+  name: 'person',
+  radius: 0.35,
+  inside: (x, y, z) => {
+    if (Math.hypot(x, (y - 0.90) * 1.05, z) <= 0.085) return true; // head
+    if (capsule(x, y, z, 0, 0.78, 0, 0, 0.82, 0, 0.045)) return true; // neck
+    // Torso: tapered, deeper than it is thick at the shoulders.
+    if (y >= 0.44 && y <= 0.80) {
+      const t = (y - 0.44) / 0.36;
+      const hw = 0.10 + 0.075 * t;
+      const hd = 0.055 + 0.02 * t;
+      if ((x / hw) ** 2 + (z / hd) ** 2 <= 1) return true;
+    }
+    // Arms, held slightly away from the body.
+    if (capsule(x, y, z, 0.16, 0.78, 0, 0.23, 0.44, 0.02, 0.038)) return true;
+    if (capsule(x, y, z, -0.16, 0.78, 0, -0.23, 0.44, 0.02, 0.038)) return true;
+    // Legs, with real space between them.
+    if (capsule(x, y, z, 0.07, 0.46, 0, 0.08, 0.02, 0.01, 0.052)) return true;
+    if (capsule(x, y, z, -0.07, 0.46, 0, -0.08, 0.02, 0.01, 0.052)) return true;
+    return false;
+  },
+  colour: (_x, y) => {
+    if (y > 0.82) return { r: 214, g: 172, b: 140 };
+    if (y > 0.44) return { r: 70, g: 110, b: 180 };
+    return { r: 48, g: 52, b: 68 };
+  },
+};
+
+/** A car: long, low, with wheels that stand proud of the body. */
+const carSolid: Solid = {
+  name: 'car',
+  radius: 1.3,
+  inside: (x, y, z) => {
+    // Wheels: discs on the flanks, axis along x.
+    for (const wx of [-0.72, 0.72]) {
+      for (const wz of [-0.34, 0.34]) {
+        if (Math.abs(x - wx) <= 0.42 && Math.hypot(y - 0.19, z - wz) <= 0.19 &&
+            Math.abs(z - wz) <= 0.09 + 0.0 && Math.abs(x - wx) <= 0.30) return true;
+      }
+    }
+    // Body.
+    if (Math.abs(x) <= 1.15 && y >= 0.16 && y <= 0.52 && Math.abs(z) <= 0.40) {
+      const taper = 1 - 0.25 * Math.max(0, (Math.abs(x) - 0.7) / 0.45);
+      if (Math.abs(z) <= 0.40 * taper) return true;
+    }
+    // Cabin, set back and narrower.
+    if (x >= -0.55 && x <= 0.45 && y > 0.52 && y <= 0.78) {
+      const t = (y - 0.52) / 0.26;
+      if (x <= 0.45 - 0.18 * t && x >= -0.55 + 0.10 * t && Math.abs(z) <= 0.34 - 0.06 * t) return true;
+    }
+    return false;
+  },
+  colour: (_x, y) => {
+    if (y < 0.30) return { r: 40, g: 40, b: 46 };
+    if (y > 0.54) return { r: 150, g: 196, b: 220 };
+    return { r: 190, g: 44, b: 48 };
+  },
+};
+
+/** A soft bag: rounded body, flat-ish base, and a handle loop with a hole. */
+const bag: Solid = {
+  name: 'bag',
+  radius: 0.5,
+  inside: (x, y, z) => {
+    // Body: a superellipsoid, wider at the top than the base.
+    if (y >= 0 && y <= 0.66) {
+      const t = y / 0.66;
+      const hw = 0.24 + 0.07 * t;
+      const hd = 0.11 + 0.035 * t;
+      const p = 2.6; // squarer than an ellipse — a bag, not a balloon
+      if (Math.abs(x / hw) ** p + Math.abs(z / hd) ** p <= 1) return true;
+    }
+    // Handle: an arch standing clear of the mouth, so there is a real hole.
+    const arch = Math.hypot(Math.hypot(x, 0) - 0.0, 0);
+    void arch;
+    const r = Math.hypot(x, (y - 0.66) * 1.0);
+    if (y > 0.62 && r >= 0.15 && r <= 0.20 && Math.abs(z) <= 0.035) return true;
+    return false;
+  },
+  colour: (_x, y) => (y > 0.62 ? { r: 92, g: 66, b: 48 } : { r: 176, g: 132, b: 92 }),
+};
+
+/**
+ * A drawing: a picture, not a solid.
+ *
+ * This is the case that breaks every depth prior in the codebase. The right
+ * answer is a flat plaque a few millimetres thick — the depth is near zero and
+ * no amount of reasoning about the *subject* changes that. Anything that
+ * inflates it into a 3D figure has answered a different question.
+ */
+const drawing: Solid = {
+  name: 'drawing',
+  radius: 0.45,
+  inside: (x, y, z) => {
+    if (Math.abs(z) > 0.018) return false; // ~3mm on a 200mm sheet
+    // A simple drawn figure: house with a roof, inside a sheet border.
+    if (Math.abs(x) <= 0.34 && y >= 0.06 && y <= 0.94) {
+      const body = Math.abs(x) <= 0.26 && y >= 0.12 && y <= 0.62;
+      const roof = y > 0.62 && y <= 0.86 && Math.abs(x) <= 0.30 * (1 - (y - 0.62) / 0.26);
+      return body || roof;
+    }
+    return false;
+  },
+  colour: (x, y) => {
+    if (y > 0.62) return { r: 190, g: 70, b: 60 };
+    if (Math.abs(x) < 0.07 && y < 0.34) return { r: 90, g: 62, b: 44 };
+    return { r: 238, g: 226, b: 196 };
+  },
+};
+
 export const SOLIDS: Solid[] = [
   sphere,
   brickBox,
@@ -195,7 +341,14 @@ export const SOLIDS: Solid[] = [
   stair,
   torus,
   teapot,
+  person,
+  carSolid,
+  bag,
+  drawing,
 ];
+
+/** The four cases the app is explicitly expected to handle. */
+export const TARGET_CASES = ['person', 'car', 'bag', 'drawing'];
 
 // --- rendering -------------------------------------------------------------
 
