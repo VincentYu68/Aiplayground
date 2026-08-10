@@ -133,6 +133,82 @@ export function estimateDepth(
  * silhouette width. Objects like mugs, vases and bottles are far better served
  * by revolving their profile than by extruding their silhouette.
  */
+/** Axis of revolution and the body's half-width at each row, in pixels. */
+export interface LatheProfile {
+  /** Horizontal position of the axis, constant over the whole object. */
+  axis: number;
+  /** Half-width of the body at each row; 0 where the body is absent. */
+  radius: Float32Array;
+}
+
+/**
+ * Fit an axis of revolution and a radius profile to a silhouette.
+ *
+ * The naive version of this — the row's leftmost and rightmost object pixel —
+ * is wrong for the single most common lathe-turned object anyone photographs.
+ * A mug's handle is part of the silhouette, so the row extent spans the body,
+ * the gap, *and* the handle: the radius comes out about 40% too large and the
+ * axis is dragged sideways. The model then samples its colours from wherever
+ * that displaced geometry happens to land, which is what split the test mug
+ * into two mismatched vertical bands.
+ *
+ * So the body is taken to be the widest *contiguous* run in each row — a
+ * detached handle is a different run and drops out — and the axis is the
+ * width-weighted median of those runs' centres, which survives the few rows
+ * where the handle does touch the body. The radius is then the *smaller* of the
+ * two distances from the axis to the ends of the run through it, since it is
+ * the handle's side that is inflated when they merge.
+ */
+export function latheProfile(mask: Mask, width: number, height: number): LatheProfile {
+  const centres: Array<{ c: number; w: number }> = [];
+  const runs = new Int32Array(height * 2).fill(-1);
+
+  for (let y = 0; y < height; y++) {
+    let bestStart = -1;
+    let bestEnd = -1;
+    let start = -1;
+    for (let x = 0; x <= width; x++) {
+      const on = x < width && mask[y * width + x] !== 0;
+      if (on && start < 0) start = x;
+      if (!on && start >= 0) {
+        if (x - start > bestEnd - bestStart) {
+          bestStart = start;
+          bestEnd = x;
+        }
+        start = -1;
+      }
+    }
+    runs[y * 2] = bestStart;
+    runs[y * 2 + 1] = bestEnd;
+    if (bestStart >= 0) centres.push({ c: (bestStart + bestEnd) / 2, w: bestEnd - bestStart });
+  }
+
+  let axis = width / 2;
+  if (centres.length > 0) {
+    centres.sort((a, b) => a.c - b.c);
+    const total = centres.reduce((s, r) => s + r.w, 0);
+    let seen = 0;
+    for (const r of centres) {
+      seen += r.w;
+      if (seen * 2 >= total) {
+        axis = r.c;
+        break;
+      }
+    }
+  }
+
+  const radius = new Float32Array(height);
+  for (let y = 0; y < height; y++) {
+    const s = runs[y * 2];
+    const e = runs[y * 2 + 1];
+    if (s < 0) continue;
+    // Only a run that actually straddles the axis describes the body.
+    if (axis < s || axis > e) continue;
+    radius[y] = Math.max(0, Math.min(axis - s, e - axis));
+  }
+  return { axis, radius };
+}
+
 export function radiusProfile(mask: Mask, width: number, height: number): Float32Array {
   const radii = new Float32Array(height);
   for (let y = 0; y < height; y++) {

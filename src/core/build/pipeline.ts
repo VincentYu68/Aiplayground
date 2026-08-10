@@ -16,7 +16,7 @@ import { addSupports, analyseStability, repairAssemblies } from './stability';
 import { buildSteps } from './steps';
 import { buildPartsList, totalParts } from '../export/bom';
 import { modelDimensionsMM } from '../lego/units';
-import { deltaE2000, rgbToLab } from '../lego/colors';
+import { deltaE2000 } from '../lego/colors';
 import type { BuildOptions, BuildResult, FidelityReport } from '../../types';
 
 export type ProgressFn = (stage: string, fraction: number) => void;
@@ -73,6 +73,15 @@ export function generateModel(
   // square in plan, so the reported size is the object's rather than the grid's.
   const trim = voxelResult.grid.trimmed();
   let grid = trim.grid;
+  // The silhouette has to be counted *before* the crop. Cropping it to the
+  // model's own extent hides exactly the failure worth knowing about: anything
+  // the model dropped entirely — a mug's handle, once revolve mode stopped
+  // pretending the handle was part of the body — falls outside the window and
+  // stops being counted as missing at all.
+  let silhouetteTotal = 0;
+  for (let i = 0; i < voxelResult.frontMask.length; i++) {
+    if (voxelResult.frontMask[i]) silhouetteTotal++;
+  }
   // The fidelity masks are indexed against the untrimmed grid, so they have to
   // be cropped in step or the comparison silently comes apart.
   const frontMask = cropPlane(
@@ -93,6 +102,14 @@ export function generateModel(
     trim.offsetY,
     EMPTY,
   ) as Int16Array;
+  const frontLab = cropLabPlane(
+    voxelResult.frontLab,
+    voxelResult.grid.sx,
+    grid.sx,
+    grid.sy,
+    trim.offsetX,
+    trim.offsetY,
+  );
 
   if (options.resolution === 'bricks') grid = snapToCourses(grid);
 
@@ -137,12 +154,10 @@ export function generateModel(
     grid,
     frontMask,
     frontColor,
+    frontLab,
+    silhouetteTotal,
     voxelResult.palette,
     voxelResult.meanDeltaE,
-    primary.rgba,
-    primary.mask,
-    primary.width,
-    primary.height,
   );
 
   onProgress('Done', 1);
@@ -185,6 +200,28 @@ function cropPlane<T extends Uint8Array | Int16Array>(
   return out;
 }
 
+/** Crop a three-channel (x, y) plane to match a trimmed grid. */
+function cropLabPlane(
+  source: Float32Array,
+  sourceWidth: number,
+  width: number,
+  height: number,
+  offsetX: number,
+  offsetY: number,
+): Float32Array {
+  const out = new Float32Array(width * height * 3);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const s = ((y + offsetY) * sourceWidth + (x + offsetX)) * 3;
+      const d = (y * width + x) * 3;
+      out[d] = source[s];
+      out[d + 1] = source[s + 1];
+      out[d + 2] = source[s + 2];
+    }
+  }
+  return out;
+}
+
 /** Bigger models get fewer randomised restarts so generation stays interactive. */
 function gridRestarts(grid: VoxelGrid): number {
   const area = grid.sx * grid.sz;
@@ -201,22 +238,29 @@ function gridRestarts(grid: VoxelGrid): number {
  * CIEDE2000 between each source column and the brick colour that replaced it.
  * Both are reported to the user, because "as close as possible" is a claim that
  * should come with a number attached.
+ *
+ * The colour comparison uses the Lab value the voxeliser sampled for each
+ * column, not a fresh lookup into the photo. Re-deriving it meant mapping grid
+ * columns across the whole image while the grid had been sampled across the
+ * object's bounding box, so any photo with margin around the object was scored
+ * against the wrong pixels — and it was scored against the colour the column
+ * *wanted*, not the colour the finished model ended up with there.
  */
 function measureFidelity(
   grid: VoxelGrid,
   frontMask: Uint8Array,
   frontColor: Int16Array,
+  frontLab: Float32Array,
+  /** Silhouette area over the *untrimmed* grid, so material the model dropped still counts. */
+  silhouetteTotal: number,
   palette: { rgb: [number, number, number]; lab: [number, number, number] }[],
   meanDeltaEFromPalette: number,
-  rgba: Uint8ClampedArray,
-  mask: Uint8Array,
-  width: number,
-  height: number,
 ): FidelityReport {
   const { sx, sy } = grid;
 
   // Front projection of what actually got built.
   const projected = new Uint8Array(sx * sy);
+  const builtColor = new Int16Array(sx * sy).fill(EMPTY);
   const preview = new Uint8ClampedArray(sx * sy * 4);
   for (let y = 0; y < sy; y++) {
     for (let x = 0; x < sx; x++) {
@@ -236,6 +280,7 @@ function measureFidelity(
         continue;
       }
       projected[i] = 1;
+      builtColor[i] = colorIndex;
       const rgb = palette[colorIndex]?.rgb ?? [128, 128, 128];
       preview[o] = rgb[0];
       preview[o + 1] = rgb[1];
@@ -245,33 +290,28 @@ function measureFidelity(
   }
 
   let intersection = 0;
-  let union = 0;
+  let modelArea = 0;
   for (let i = 0; i < projected.length; i++) {
-    const a = projected[i];
-    const b = frontMask[i];
-    if (a || b) union++;
-    if (a && b) intersection++;
+    if (projected[i]) modelArea++;
+    if (projected[i] && frontMask[i]) intersection++;
   }
+  // Silhouette pixels outside the crop are, by construction, ones the model has
+  // nothing at: they belong in the union and never in the intersection.
+  const union = silhouetteTotal + modelArea - intersection;
 
   // Colour error against the source, measured where the model has material.
   let deltaSum = 0;
   let deltaCount = 0;
-  if (width > 0 && height > 0) {
-    for (let y = 0; y < sy; y++) {
-      for (let x = 0; x < sx; x++) {
-        const i = y * sx + x;
-        if (!projected[i] || frontColor[i] === EMPTY) continue;
-        const target = palette[frontColor[i]];
-        if (!target) continue;
-        const sx0 = Math.min(width - 1, Math.floor(((x + 0.5) / sx) * width));
-        const sy0 = Math.min(height - 1, Math.floor(((sy - 1 - y + 0.5) / sy) * height));
-        const si = sy0 * width + sx0;
-        if (!mask[si]) continue;
-        const lab = rgbToLab(rgba[si * 4], rgba[si * 4 + 1], rgba[si * 4 + 2]);
-        deltaSum += deltaE2000(lab, target.lab);
-        deltaCount++;
-      }
-    }
+  for (let i = 0; i < projected.length; i++) {
+    // Only columns that both photographed as object and got built are
+    // comparable: elsewhere there is no pair of colours to take a distance
+    // between.
+    if (!projected[i] || frontColor[i] === EMPTY) continue;
+    const built = palette[builtColor[i]];
+    if (!built) continue;
+    const lab: [number, number, number] = [frontLab[i * 3], frontLab[i * 3 + 1], frontLab[i * 3 + 2]];
+    deltaSum += deltaE2000(lab, built.lab);
+    deltaCount++;
   }
 
   return {

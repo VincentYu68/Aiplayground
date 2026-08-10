@@ -11,7 +11,7 @@
 import { deltaE2000, PALETTE, rgbToLab, type LegoColor } from '../lego/colors';
 import { platesForAspect } from '../lego/units';
 import { bounds, type Mask } from '../image/raster';
-import { centerProfile, radiusProfile, type DepthField } from '../image/depth';
+import { latheProfile, type DepthField } from '../image/depth';
 import { nearestEdgePixel } from '../image/wrap';
 import { nearestColorIndex } from '../lego/colors';
 import { selectPalette } from './quantize';
@@ -36,6 +36,19 @@ export interface VoxelizeResult {
   frontMask: Uint8Array;
   /** Quantised colour index per (x, y) column, EMPTY where the column is empty. */
   frontColor: Int16Array;
+  /**
+   * The Lab colour actually sampled from the photo for each column, three
+   * floats per column.
+   *
+   * Carried alongside rather than re-derived downstream on purpose. Colour
+   * error used to be measured by mapping grid columns back across the whole
+   * image, but the grid was sampled across the object's *bounding box* — so
+   * every photo where the object did not fill the frame was scored against the
+   * wrong pixels. Padding a photo with background moved the reported error on
+   * an identical model from 9.6 to 17.8. Keeping the sample means the two can
+   * no longer disagree.
+   */
+  frontLab: Float32Array;
   /** Mean CIEDE2000 error introduced by the palette reduction. */
   meanDeltaE: number;
 }
@@ -199,6 +212,7 @@ export function voxelize(
       palette: [PALETTE[0]],
       frontMask: new Uint8Array(1),
       frontColor: Int16Array.from([EMPTY]),
+      frontLab: new Float32Array(3),
       meanDeltaE: 0,
     };
   }
@@ -256,6 +270,7 @@ export function voxelize(
 
   const frontMask = new Uint8Array(gridX * gridY);
   const frontColor = new Int16Array(gridX * gridY).fill(EMPTY);
+  const frontLab = new Float32Array(gridX * gridY * 3);
   const backColor = new Int16Array(gridX * gridY).fill(EMPTY);
   let deltaSum = 0;
   let deltaCount = 0;
@@ -267,7 +282,11 @@ export function voxelize(
     frontMask[i] = 1;
     const course = Math.floor(Math.floor(i / gridX) / 3);
 
-    const { index, deltaE } = colorForColumn(rgbToLab(c.r, c.g, c.b), palette, course);
+    const lab = rgbToLab(c.r, c.g, c.b);
+    frontLab[i * 3] = lab[0];
+    frontLab[i * 3 + 1] = lab[1];
+    frontLab[i * 3 + 2] = lab[2];
+    const { index, deltaE } = colorForColumn(lab, palette, course);
     frontColor[i] = index;
     deltaSum += deltaE;
     deltaCount++;
@@ -341,6 +360,7 @@ export function voxelize(
     palette,
     frontMask,
     frontColor,
+    frontLab,
     meanDeltaE: deltaCount ? deltaSum / deltaCount : 0,
   };
 }
@@ -363,10 +383,11 @@ function fillRevolved(
   pxPerPlate: number,
 ): void {
   void options;
-  const radii = radiusProfile(mask, width, height);
-  const centers = centerProfile(mask, width, height);
+  const { axis, radius: radii } = latheProfile(mask, width, height);
   const pxPerStud = box.width / grid.sx;
   const zCentre = (grid.sz - 1) / 2;
+
+  const centreStuds = (axis - box.minX) / pxPerStud;
 
   for (let gy = 0; gy < grid.sy; gy++) {
     const sy = Math.min(
@@ -375,34 +396,41 @@ function fillRevolved(
     );
     const radiusStuds = radii[sy] / pxPerStud;
     if (radiusStuds < 0.4) continue;
-    const centreStuds = (centers[sy] - box.minX) / pxPerStud;
+
+    // One colour per height, read from the band around the axis.
+    //
+    // Colour used to be sampled at the matching distance from the axis, which
+    // is wrong in both directions. Every voxel on the outer surface sits at the
+    // full radius, so the whole body took the colour of the *silhouette edge* —
+    // the grazing, most-shaded pixels in the photo — and a white mug came out
+    // mid-grey. Worse, sampling that far out lands on the anti-aliased boundary,
+    // where a rounded lookup falls outside the mask about half the time; the
+    // voxel was then skipped entirely and the colour came from whatever sat
+    // behind it, striping the band into ribbons.
+    //
+    // A lathe-turned object is one colour all the way round at a given height,
+    // and the honest place to read it is where the surface faces the camera.
+    const window = Math.max(1, radii[sy] * 0.5);
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let n = 0;
+    for (let px = Math.max(0, Math.round(axis - window)); px <= Math.min(width - 1, Math.round(axis + window)); px++) {
+      const idx = sy * width + px;
+      if (!mask[idx]) continue;
+      r += rgba[idx * 4];
+      g += rgba[idx * 4 + 1];
+      b += rgba[idx * 4 + 2];
+      n++;
+    }
+    if (n === 0) continue;
+    const { index } = nearestColorIndex(rgbToLab(r / n, g / n, b / n), palette);
 
     for (let gz = 0; gz < grid.sz; gz++) {
       for (let gx = 0; gx < grid.sx; gx++) {
         const dx = gx + 0.5 - centreStuds;
         const dz = gz + 0.5 - (zCentre + 0.5);
-        const rr = Math.hypot(dx, dz);
-        if (rr > radiusStuds) continue;
-
-        // Colour comes from the photo at the same distance from the axis,
-        // averaging the two mirrored samples so lighting bias cancels out.
-        const offsetPx = rr * pxPerStud;
-        let r = 0;
-        let g = 0;
-        let b = 0;
-        let n = 0;
-        for (const sx of [centers[sy] - offsetPx, centers[sy] + offsetPx]) {
-          const px = Math.round(sx);
-          if (px < 0 || px >= width) continue;
-          const idx = sy * width + px;
-          if (!mask[idx]) continue;
-          r += rgba[idx * 4];
-          g += rgba[idx * 4 + 1];
-          b += rgba[idx * 4 + 2];
-          n++;
-        }
-        if (n === 0) continue;
-        const { index } = nearestColorIndex(rgbToLab(r / n, g / n, b / n), palette);
+        if (Math.hypot(dx, dz) > radiusStuds) continue;
         grid.set(gx, gy, gz, index);
       }
     }
@@ -417,19 +445,28 @@ function fillRevolved(
  */
 export function snapToCourses(grid: VoxelGrid): VoxelGrid {
   const out = new VoxelGrid(grid.sx, grid.sy, grid.sz);
-  const courses = Math.floor(grid.sy / 3);
+  // Round *up*: the grid is trimmed to its material before this runs, so its
+  // height is only a multiple of three by luck. Flooring quietly deleted the
+  // top one or two plate layers of every model whose height was not — which,
+  // for a carved hull, is two times in three. The last course is simply
+  // shorter than the rest, and the tiler builds it out of plates.
+  const courses = Math.ceil(grid.sy / 3);
   for (let c = 0; c < courses; c++) {
+    const y0 = c * 3;
+    const layers = Math.min(3, grid.sy - y0);
     for (let z = 0; z < grid.sz; z++) {
       for (let x = 0; x < grid.sx; x++) {
         const votes = new Map<number, number>();
         let filled = 0;
-        for (let k = 0; k < 3; k++) {
-          const v = grid.get(x, c * 3 + k, z);
+        for (let k = 0; k < layers; k++) {
+          const v = grid.get(x, y0 + k, z);
           if (v === EMPTY) continue;
           filled++;
           votes.set(v, (votes.get(v) ?? 0) + 1);
         }
-        if (filled < 2) continue;
+        // A majority of the layers that actually exist, so a two- or one-plate
+        // remainder course is judged on its own terms rather than against 3.
+        if (filled * 2 < layers) continue;
         let best = EMPTY;
         let bestN = 0;
         for (const [v, n] of votes) {
@@ -438,7 +475,7 @@ export function snapToCourses(grid: VoxelGrid): VoxelGrid {
             best = v;
           }
         }
-        for (let k = 0; k < 3; k++) out.set(x, c * 3 + k, z, best);
+        for (let k = 0; k < layers; k++) out.set(x, y0 + k, z, best);
       }
     }
   }

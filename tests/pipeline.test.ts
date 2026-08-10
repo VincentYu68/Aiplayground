@@ -8,6 +8,9 @@ import { ARCHETYPE_BY_CLASS, CLASS_NAMES } from '../src/core/recognise/imagenet'
 import { shapePriorFor } from '../src/core/recognise/shapePrior';
 import { generateModel } from '../src/core/build/pipeline';
 import { EMPTY, VoxelGrid } from '../src/core/voxel/grid';
+import { snapToCourses } from '../src/core/voxel/voxelize';
+import { selectPalette } from '../src/core/voxel/quantize';
+import { latheProfile } from '../src/core/image/depth';
 import { hollow, labelComponents, shouldHollow } from '../src/core/voxel/cleanup';
 import { tileGrid } from '../src/core/build/tiling';
 import {
@@ -1267,5 +1270,140 @@ describe('recognising what the object is', () => {
       shapePriorFor({ label: 'x', labelConfidence: 0.9, archetype: 'U', confidence: 0.9 }),
     ).toBeNull();
     expect(shapePriorFor(null)).toBeNull();
+  });
+});
+
+describe('regressions in what the model keeps and what it reports', () => {
+  it('keeps the top course when the height is not a multiple of three', () => {
+    // snapToCourses runs after the grid is trimmed to its material, so its
+    // height is only a multiple of three by luck. Flooring the course count
+    // deleted the top one or two plate layers of every model that was not.
+    for (const sy of [9, 10, 11, 12]) {
+      const grid = new VoxelGrid(4, sy, 4);
+      for (let y = 0; y < sy; y++)
+        for (let z = 0; z < 4; z++) for (let x = 0; x < 4; x++) grid.set(x, y, z, 0);
+
+      const snapped = snapToCourses(grid);
+      expect(snapped.count()).toBe(grid.count());
+      let top = -1;
+      for (let y = sy - 1; y >= 0 && top < 0; y--) {
+        for (let z = 0; z < 4 && top < 0; z++)
+          for (let x = 0; x < 4; x++)
+            if (snapped.get(x, y, z) !== EMPTY) {
+              top = y;
+              break;
+            }
+      }
+      expect(top).toBe(sy - 1);
+    }
+  });
+
+  it('reports the same colour error however much background surrounds the object', () => {
+    // The colour error used to be re-derived by mapping grid columns across the
+    // whole image, while the grid had been sampled across the object's bounding
+    // box. Padding the photo therefore moved the reported error on a model that
+    // had not changed at all.
+    const solid = SOLIDS.find((s) => s.name === 'mug')!;
+    const base = renderView(solid, 0, 200);
+
+    const pad = (factor: number) => {
+      const w = Math.round(base.width * factor);
+      const h = Math.round(base.height * factor);
+      const ox = Math.round((w - base.width) / 2);
+      const oy = Math.round((h - base.height) / 2);
+      const rgba = new Uint8ClampedArray(w * h * 4);
+      const mask = new Uint8Array(w * h);
+      for (let i = 0; i < w * h; i++) {
+        rgba[i * 4] = 120;
+        rgba[i * 4 + 1] = 120;
+        rgba[i * 4 + 2] = 120;
+        rgba[i * 4 + 3] = 255;
+      }
+      for (let y = 0; y < base.height; y++)
+        for (let x = 0; x < base.width; x++) {
+          const s = y * base.width + x;
+          const d = (y + oy) * w + (x + ox);
+          rgba[d * 4] = base.rgba[s * 4];
+          rgba[d * 4 + 1] = base.rgba[s * 4 + 1];
+          rgba[d * 4 + 2] = base.rgba[s * 4 + 2];
+          rgba[d * 4 + 3] = 255;
+          mask[d] = base.mask[s];
+        }
+      return { ...base, rgba, mask, width: w, height: h };
+    };
+
+    const options: BuildOptions = { ...DEFAULT_OPTIONS, studsWide: 20 };
+    const tight = generateModel([base], options).fidelity.meanDeltaE;
+    for (const factor of [1.5, 2.5]) {
+      const padded = generateModel([pad(factor)], options).fidelity.meanDeltaE;
+      expect(Math.abs(padded - tight)).toBeLessThan(0.5);
+    }
+  });
+
+  it('counts material the model dropped against the silhouette match', () => {
+    // Cropping the silhouette to the model's own extent hid whole features the
+    // model had abandoned — a mug's handle scored as if it had never existed.
+    const solid = SOLIDS.find((s) => s.name === 'mug')!;
+    const view = renderView(solid, 0, 200);
+    const revolved = generateModel([view], {
+      ...DEFAULT_OPTIONS,
+      studsWide: 20,
+      solidMode: 'revolve',
+    });
+    // A body of revolution cannot carry a handle, and the score has to say so.
+    expect(revolved.gridX).toBeLessThan(revolved.fidelity.preview.width + 1);
+    expect(revolved.fidelity.silhouetteIoU).toBeLessThan(0.95);
+  });
+});
+
+describe('fitting an axis of revolution', () => {
+  it('ignores a handle when measuring the body', () => {
+    // A mug's handle is part of the silhouette, so the row's leftmost and
+    // rightmost object pixels span body, gap and handle alike: the radius came
+    // out far too large and the axis was dragged sideways.
+    const width = 200;
+    const height = 120;
+    const mask = new Uint8Array(width * height);
+    const bodyX0 = 40;
+    const bodyX1 = 100; // body spans 40..99, so the axis is at 70
+    for (let y = 20; y < 100; y++) {
+      for (let x = bodyX0; x < bodyX1; x++) mask[y * width + x] = 1;
+      // A detached handle to the right, with a clear gap.
+      if (y > 40 && y < 80) for (let x = 120; x < 140; x++) mask[y * width + x] = 1;
+    }
+
+    const { axis, radius } = latheProfile(mask, width, height);
+    expect(axis).toBeGreaterThan(65);
+    expect(axis).toBeLessThan(75);
+
+    let widest = 0;
+    for (let y = 0; y < height; y++) widest = Math.max(widest, radius[y]);
+    // The body's true half-width is 30. The naive extent would have said 50.
+    expect(widest).toBeGreaterThan(27);
+    expect(widest).toBeLessThan(33);
+  });
+});
+
+describe('choosing the palette', () => {
+  it('does not spend the budget on colours no cluster asked for', () => {
+    // Snapping cluster centres onto LEGO colours under a distinctness
+    // constraint pushed the second cluster that wanted White onto whatever was
+    // next, which is how a white mug came out in two greys.
+    const samples: number[] = [];
+    for (let i = 0; i < 400; i++) {
+      const lab = rgbToLab(250 - (i % 12), 250 - (i % 9), 248 - (i % 7));
+      samples.push(lab[0], lab[1], lab[2]);
+    }
+    const chosen = selectPalette(Float32Array.from(samples), 400, 12, 1);
+
+    // Every colour picked has to be a colour something in the image is near.
+    for (const c of chosen) {
+      let best = Infinity;
+      for (let i = 0; i < 400; i++) {
+        best = Math.min(best, deltaE2000([samples[i * 3], samples[i * 3 + 1], samples[i * 3 + 2]], c.lab));
+      }
+      expect(best).toBeLessThan(12);
+    }
+    expect(chosen.length).toBeLessThan(12);
   });
 });

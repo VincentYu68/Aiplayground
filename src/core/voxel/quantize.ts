@@ -103,8 +103,26 @@ export function selectPalette(
     }
   }
 
-  // Snap cluster centres to real colours, keeping the set distinct.
-  const chosen: LegoColor[] = [];
+  // Distance from every sample to every LEGO colour, computed once. Everything
+  // below is table lookups on top of this, which is what makes it affordable to
+  // choose the palette by measured error rather than by proximity of centres.
+  const cost = new Float32Array(sampleCount * PALETTE.length);
+  for (let i = 0; i < sampleCount; i++) {
+    const lab = [samples[i * 3], samples[i * 3 + 1], samples[i * 3 + 2]];
+    for (let p = 0; p < PALETTE.length; p++) {
+      cost[i * PALETTE.length + p] = deltaE2000(lab, PALETTE[p].lab);
+    }
+  }
+
+  // Snap each cluster centre to its nearest real colour, and let two centres
+  // that want the same colour *have* it.
+  //
+  // Forcing the set to be distinct here was actively harmful: a white mug
+  // clusters into several near-white shades, the first took White and the rest
+  // were pushed onto whatever was next — so the model came out in two greys.
+  // A red car put bricks on the road in magenta the same way. Collapsing costs
+  // nothing, because the budget that frees up is spent below on whichever
+  // colour actually reduces the error.
   const used = new Set<number>();
   const weights = centers.map((_, c) => {
     let w = 0;
@@ -117,21 +135,60 @@ export function selectPalette(
     let best = -1;
     let bestD = Infinity;
     for (let p = 0; p < PALETTE.length; p++) {
-      if (used.has(p)) continue;
       const d = deltaE2000(centers[c], PALETTE[p].lab);
       if (d < bestD) {
         bestD = d;
         best = p;
       }
     }
-    if (best >= 0) {
-      used.add(best);
-      chosen.push(PALETTE[best]);
+    if (best >= 0) used.add(best);
+  }
+  if (used.size === 0) used.add(0);
+
+  // Spend what is left of the budget on the colour that most reduces the error
+  // actually being made, and stop as soon as the next one is not worth the
+  // extra line in the parts list. An extra colour is not free: a part cannot
+  // cross a colour boundary, so every additional shade fragments the layers and
+  // costs pieces.
+  const best = new Float32Array(sampleCount).fill(Infinity);
+  for (let i = 0; i < sampleCount; i++) {
+    for (const p of used) best[i] = Math.min(best[i], cost[i * PALETTE.length + p]);
+  }
+  while (used.size < budget) {
+    let bestP = -1;
+    let bestGain = 0;
+    for (let p = 0; p < PALETTE.length; p++) {
+      if (used.has(p)) continue;
+      let gain = 0;
+      for (let i = 0; i < sampleCount; i++) {
+        const d = cost[i * PALETTE.length + p];
+        if (d < best[i]) gain += best[i] - d;
+      }
+      if (gain > bestGain) {
+        bestGain = gain;
+        bestP = p;
+      }
+    }
+    // Mean CIEDE2000 improvement across the whole model. Below roughly a third
+    // of a unit the change is not visible, and the fragmentation is.
+    if (bestP < 0 || bestGain / sampleCount < MIN_COLOUR_GAIN) break;
+    used.add(bestP);
+    for (let i = 0; i < sampleCount; i++) {
+      best[i] = Math.min(best[i], cost[i * PALETTE.length + bestP]);
     }
   }
+
+  const chosen = [...used].sort((a, b) => a - b).map((p) => PALETTE[p]);
   if (chosen.length === 0) chosen.push(PALETTE[0]);
   return chosen;
 }
+
+/**
+ * Smallest mean CIEDE2000 improvement that justifies adding another colour to
+ * the palette. Roughly the threshold where a difference stops being visible
+ * side by side.
+ */
+const MIN_COLOUR_GAIN = 0.35;
 
 /** Snap a single sRGB colour onto a palette. */
 export function quantizeRgb(

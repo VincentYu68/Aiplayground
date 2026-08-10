@@ -111,6 +111,7 @@ export function voxelizeFromHull(
   const unitsPerPlate = hull.unitsPerStud * (PLATE_MM / STUD_MM);
   const frontMask = new Uint8Array(sx * sy);
   const frontColor = new Int16Array(sx * sy).fill(EMPTY);
+  const frontLab = new Float32Array(sx * sy * 3);
   for (let gy = 0; gy < sy; gy++) {
     const y = (gy + 0.5) * unitsPerPlate;
     const py = Math.round(view.bottomY - y * view.pixelsPerUnit);
@@ -122,11 +123,18 @@ export function voxelizeFromHull(
       if (px >= 0 && py >= 0 && px < view.width && py < view.height) {
         frontMask[idx] = view.mask[py * view.width + px] ? 1 : 0;
       }
-      // Colour of the frontmost voxel in this column, for the comparison strip.
+      // Colour of the frontmost voxel in this column, for the comparison strip,
+      // kept next to the hull colour it was reduced from so fidelity can be
+      // scored without mapping grid coordinates back into the photo.
       for (let gz = 0; gz < sz; gz++) {
         const v = grid.get(gx, gy, gz);
         if (v !== EMPTY) {
           frontColor[idx] = v;
+          const i = (gy * sz + gz) * sx + gx;
+          const lab = rgbToLab(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+          frontLab[idx * 3] = lab[0];
+          frontLab[idx * 3 + 1] = lab[1];
+          frontLab[idx * 3 + 2] = lab[2];
           break;
         }
       }
@@ -138,6 +146,7 @@ export function voxelizeFromHull(
     palette,
     frontMask,
     frontColor,
+    frontLab,
     meanDeltaE: deltaCount ? deltaSum / deltaCount : 0,
   };
 }
