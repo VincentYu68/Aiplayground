@@ -62,10 +62,25 @@ function chunkLayer(layer: Placement[], partsPerStep: number): Placement[][] {
   return chunks;
 }
 
+/**
+ * Longest manual anyone will follow.
+ *
+ * "Parts per step" is a preference about how gentle the instructions are, and
+ * at the default of eight it produced 489 steps for the test bottle and 211 for
+ * a mug. Past a couple of hundred steps the manual stops being an aid, so the
+ * preference is honoured until it collides with this, and then the steps grow
+ * instead of the manual.
+ */
+const MAX_STEPS = 120;
+
 export function buildSteps(placements: Placement[], partsPerStep: number): BuildStep[] {
   const ordered = orderPlacements(placements);
   const steps: BuildStep[] = [];
-  const perStep = Math.max(1, Math.round(partsPerStep));
+  const perStep = Math.max(
+    1,
+    Math.round(partsPerStep),
+    Math.ceil(placements.length / MAX_STEPS),
+  );
 
   let i = 0;
   let cumulative = 0;

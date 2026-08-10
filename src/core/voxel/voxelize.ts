@@ -318,14 +318,23 @@ export function voxelize(
   // --- pass 3: extrude into the depth axis --------------------------------
   const grid = new VoxelGrid(gridX, gridY, gridZ);
 
-  if (options.solidMode === 'revolve') {
-    fillRevolved(grid, rgba, mask, width, height, box, palette, options, pxPerPlate);
-  } else {
+  // A body of revolution cannot describe a handle, a spout or a leaf, and
+  // dropping them outright is worse than the old bug that smeared them into the
+  // body: a mug without its handle is not a mug. So the lathe fills what it can
+  // and reports which columns it covered, and everything the photograph shows
+  // outside that is extruded from its own silhouette as usual.
+  const revolved =
+    options.solidMode === 'revolve'
+      ? fillRevolved(grid, rgba, mask, width, height, box, palette, options, pxPerPlate)
+      : null;
+
+  {
     const centre = (gridZ - 1) / 2;
     for (let gy = 0; gy < gridY; gy++) {
       for (let gx = 0; gx < gridX; gx++) {
         const i = gy * gridX + gx;
         if (!frontMask[i]) continue;
+        if (revolved && revolved[i]) continue;
         const c = columns[i];
 
         const total = c.front + c.back;
@@ -366,10 +375,13 @@ export function voxelize(
 }
 
 /**
- * Rotational-symmetry mode: sweep each row's silhouette half-width around the
+ * Rotational-symmetry mode: sweep each row's body half-width around the
  * vertical axis. For anything turned on a lathe — mugs, vases, bottles, lamps —
  * this recovers the true shape from one photo, which silhouette extrusion
  * fundamentally cannot.
+ *
+ * Returns which (x, y) columns the body covers, so the caller can fill in the
+ * parts of the silhouette a lathe cannot reach.
  */
 function fillRevolved(
   grid: VoxelGrid,
@@ -381,11 +393,12 @@ function fillRevolved(
   palette: LegoColor[],
   options: VoxelizeOptions,
   pxPerPlate: number,
-): void {
+): Uint8Array {
   void options;
   const { axis, radius: radii } = latheProfile(mask, width, height);
   const pxPerStud = box.width / grid.sx;
   const zCentre = (grid.sz - 1) / 2;
+  const covered = new Uint8Array(grid.sx * grid.sy);
 
   const centreStuds = (axis - box.minX) / pxPerStud;
 
@@ -432,9 +445,11 @@ function fillRevolved(
         const dz = gz + 0.5 - (zCentre + 0.5);
         if (Math.hypot(dx, dz) > radiusStuds) continue;
         grid.set(gx, gy, gz, index);
+        covered[gy * grid.sx + gx] = 1;
       }
     }
   }
+  return covered;
 }
 
 /**

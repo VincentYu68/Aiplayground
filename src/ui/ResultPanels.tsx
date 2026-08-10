@@ -70,6 +70,23 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
           </dd>
           <p>Average perceptual distance from the photo to the nearest LEGO colour.</p>
         </div>
+        {result.sizeLimited && (
+          <div>
+            <dt>Size</dt>
+            <dd>{result.sizeLimited.used} studs wide</dd>
+            <p>
+              Narrowed from {result.sizeLimited.requested}: this object is tall enough
+              that the width you asked for would have made a model{' '}
+              {Math.round(
+                (result.dimensionsMM.height * result.sizeLimited.requested) /
+                  result.sizeLimited.used /
+                  10,
+              )}
+              cm tall, and thousands of parts. Height is capped at{' '}
+              {Math.round(result.dimensionsMM.height / 10)}cm.
+            </p>
+          </div>
+        )}
       </dl>
     </section>
   );

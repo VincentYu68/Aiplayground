@@ -104,6 +104,10 @@ export default function App() {
           v.id === message.viewId ? { ...v, mask: message.mask, engine: message.engine } : v,
         ),
       );
+      // The outline this model was built from has just been replaced. Whatever
+      // is on screen is now out of date, and saying so is the whole point of
+      // the dirty flag.
+      setDirty(true);
       return;
     }
 
@@ -241,6 +245,12 @@ export default function App() {
   useEffect(() => {
     if (model.state !== 'ready' || upgraded.current) return;
     upgraded.current = true;
+    if (viewsRef.current.length === 0) return;
+    // Rebuild once the better outlines land. Re-cutting the photos and then
+    // leaving the old model on screen was the worst of both: the model was
+    // still the one GrabCut produced, while the UI had already started saying
+    // the outline came from the recognition model.
+    autoBuild.current = true;
     for (const v of viewsRef.current) runSegmentation(v.id);
   }, [model.state, runSegmentation]);
 
@@ -286,9 +296,13 @@ export default function App() {
   useEffect(() => {
     if (!autoBuild.current) return;
     if (views.length === 0 || readyViews.length !== views.length) return;
+    // Every photo already has *an* outline while they are being re-cut, so
+    // without this the rebuild would fire on the first one back and use stale
+    // masks for the rest.
+    if (segmenting > 0) return;
     autoBuild.current = false;
     build(readyViews, options);
-  }, [views, readyViews, options, build]);
+  }, [views, readyViews, options, build, segmenting]);
 
   const addView = useCallback(
     async (file: File, replaceAll: boolean) => {
@@ -446,6 +460,9 @@ export default function App() {
                 rect={active.rect}
                 onPaint={(nextHints, localMask) => {
                   patchActive({ hints: nextHints, ...(localMask ? { mask: localMask } : {}) });
+                  // Correcting the cut-out changes the model, so the build
+                  // button has to stop claiming to be up to date.
+                  if (localMask) setDirty(true);
                 }}
                 onRect={(nextRect) => patchActive({ rect: nextRect })}
                 onCommit={() => runSegmentation(active.id)}

@@ -165,6 +165,11 @@ export interface BuildResult {
   viewsUsed: number;
   /** Whether the shape was carved from silhouettes or guessed from one view. */
   geometry: 'visual-hull' | 'extruded';
+  /**
+   * Set when the requested width would have produced a model too tall to
+   * build, and was reduced. Null when the width was used as asked for.
+   */
+  sizeLimited: { requested: number; used: number } | null;
   /** Wall-clock time of the generation pass. */
   elapsedMs: number;
 }

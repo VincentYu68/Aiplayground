@@ -15,7 +15,8 @@ import { tileGrid } from './tiling';
 import { addSupports, analyseStability, repairAssemblies } from './stability';
 import { buildSteps } from './steps';
 import { buildPartsList, totalParts } from '../export/bom';
-import { modelDimensionsMM } from '../lego/units';
+import { modelDimensionsMM, platesForAspect } from '../lego/units';
+import { bounds } from '../image/raster';
 import { deltaE2000 } from '../lego/colors';
 import type { BuildOptions, BuildResult, FidelityReport } from '../../types';
 
@@ -23,6 +24,46 @@ export type ProgressFn = (stage: string, fraction: number) => void;
 
 /** Wall thickness left behind when the interior is carved out: two studs. */
 const SHELL_MM = 16;
+
+/**
+ * Tallest model worth building: 40 courses, a little under 39cm.
+ *
+ * The width control sets the width, and the height follows from the object's
+ * proportions — which is fine until someone photographs a bottle. At the
+ * default 32 studs the test bottle came out 225 plates tall: 72cm, 3678 parts
+ * and 489 steps, from a setting that produces a sensible model for anything
+ * roughly as tall as it is wide. Nobody chose that, and nothing in the UI
+ * warned about it. So the width is reduced until the model fits, and the
+ * report says it happened.
+ */
+const MAX_PLATES = 120;
+
+/**
+ * Reduce the width until the model's height is buildable.
+ *
+ * Both paths derive height from the width and the object's proportions, so
+ * this only has to be decided once, from the view the user framed.
+ */
+function fitToBuildableHeight(
+  views: View[],
+  options: BuildOptions,
+): { options: BuildOptions; requestedStudsWide: number | null } {
+  const box = bounds(views[0].mask, views[0].width, views[0].height);
+  if (!box) return { options, requestedStudsWide: null };
+  const plates = platesForAspect(options.studsWide, box.width, box.height);
+  if (plates <= MAX_PLATES) return { options, requestedStudsWide: null };
+
+  // Six studs is the floor: below that there is not enough width left to carry
+  // any of the object's shape. Something as extreme as a pencil therefore ends
+  // up over the cap, which is the right way round — it is better to be a little
+  // too tall than to be four studs of nothing.
+  const scaled = Math.max(6, Math.floor(options.studsWide * (MAX_PLATES / plates)));
+  if (scaled >= options.studsWide) return { options, requestedStudsWide: null };
+  return {
+    options: { ...options, studsWide: scaled },
+    requestedStudsWide: options.studsWide,
+  };
+}
 
 /**
  * Build from one or more views.
@@ -34,12 +75,13 @@ const SHELL_MM = 16;
  */
 export function generateModel(
   views: View[],
-  options: BuildOptions,
+  requestedOptions: BuildOptions,
   onProgress: ProgressFn = () => {},
 ): BuildResult {
   const started = Date.now();
   const primary = views[0];
   const multiView = views.length >= 2;
+  const { options, requestedStudsWide } = fitToBuildableHeight(views, requestedOptions);
 
   let voxelResult;
   if (multiView) {
@@ -176,6 +218,10 @@ export function generateModel(
     dimensionsMM: modelDimensionsMM(grid.sx, grid.sy, grid.sz),
     viewsUsed: views.length,
     geometry: multiView ? 'visual-hull' : 'extruded',
+    sizeLimited:
+      requestedStudsWide === null
+        ? null
+        : { requested: requestedStudsWide, used: options.studsWide },
     elapsedMs: Date.now() - started,
   };
 }

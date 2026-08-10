@@ -1341,18 +1341,30 @@ describe('regressions in what the model keeps and what it reports', () => {
   });
 
   it('counts material the model dropped against the silhouette match', () => {
-    // Cropping the silhouette to the model's own extent hid whole features the
-    // model had abandoned — a mug's handle scored as if it had never existed.
-    const solid = SOLIDS.find((s) => s.name === 'mug')!;
-    const view = renderView(solid, 0, 200);
-    const revolved = generateModel([view], {
-      ...DEFAULT_OPTIONS,
-      studsWide: 20,
-      solidMode: 'revolve',
-    });
-    // A body of revolution cannot carry a handle, and the score has to say so.
-    expect(revolved.gridX).toBeLessThan(revolved.fidelity.preview.width + 1);
-    expect(revolved.fidelity.silhouetteIoU).toBeLessThan(0.95);
+    // The silhouette used to be cropped to the model's own extent, so anything
+    // the model abandoned fell outside the window and stopped counting as
+    // missing at all. A speck the cleanup discards has to cost something.
+    const width = 240;
+    const height = 160;
+    const rgba = new Uint8ClampedArray(width * height * 4).fill(200);
+
+    const body = (into: Uint8Array) => {
+      for (let y = 30; y < 130; y++) for (let x = 20; x < 120; x++) into[y * width + x] = 1;
+    };
+
+    const withSpeck = new Uint8Array(width * height);
+    body(withSpeck);
+    for (let y = 78; y < 84; y++) for (let x = 210; x < 216; x++) withSpeck[y * width + x] = 1;
+
+    const alone = new Uint8Array(width * height);
+    body(alone);
+
+    const options: BuildOptions = { ...DEFAULT_OPTIONS, studsWide: 24 };
+    const dropped = generateModel([{ rgba, mask: withSpeck, width, height, azimuth: 0 }], options);
+    const clean = generateModel([{ rgba, mask: alone, width, height, azimuth: 0 }], options);
+
+    expect(clean.fidelity.silhouetteIoU).toBeGreaterThan(0.99);
+    expect(dropped.fidelity.silhouetteIoU).toBeLessThan(0.99);
   });
 });
 
@@ -1405,5 +1417,114 @@ describe('choosing the palette', () => {
       expect(best).toBeLessThan(12);
     }
     expect(chosen.length).toBeLessThan(12);
+  });
+});
+
+describe('keeping the model buildable', () => {
+  it('narrows a tall object rather than building a metre of it', () => {
+    // The width control sets the width and the height follows from the
+    // object's proportions, which is fine until someone photographs a bottle:
+    // 32 studs wide made the test bottle 72cm tall and 3678 parts.
+    const width = 200;
+    const height = 400;
+    const rgba = new Uint8ClampedArray(width * height * 4).fill(255);
+    const mask = new Uint8Array(width * height);
+    // Roughly a bottle: five times as tall as it is wide.
+    for (let y = 30; y < 330; y++)
+      for (let x = 70; x < 130; x++) mask[y * width + x] = 1;
+
+    const result = generateModel([{ rgba, mask, width, height, azimuth: 0 }], {
+      ...DEFAULT_OPTIONS,
+      studsWide: 32,
+    });
+
+    expect(result.sizeLimited).not.toBeNull();
+    expect(result.sizeLimited!.requested).toBe(32);
+    expect(result.sizeLimited!.used).toBeLessThan(32);
+    expect(result.gridY).toBeLessThanOrEqual(120);
+    expect(result.dimensionsMM.height).toBeLessThan(400);
+  });
+
+  it('leaves a normally proportioned object at the width asked for', () => {
+    const width = 200;
+    const height = 200;
+    const rgba = new Uint8ClampedArray(width * height * 4).fill(255);
+    const mask = new Uint8Array(width * height);
+    for (let y = 40; y < 160; y++)
+      for (let x = 40; x < 160; x++) mask[y * width + x] = 1;
+
+    const result = generateModel([{ rgba, mask, width, height, azimuth: 0 }], {
+      ...DEFAULT_OPTIONS,
+      studsWide: 24,
+    });
+    expect(result.sizeLimited).toBeNull();
+    expect(result.gridX).toBe(24);
+  });
+
+  it('grows the steps rather than the manual once a build gets big', () => {
+    const placements: Placement[] = [];
+    for (let y = 0; y < 60; y += 3)
+      for (let z = 0; z < 20; z++)
+        for (let x = 0; x < 20; x += 2)
+          placements.push({
+            partId: 'brick-2x1',
+            code: '3004',
+            w: 2,
+            d: 1,
+            height: 3,
+            x,
+            y,
+            z,
+            color: 15,
+          });
+
+    const steps = buildSteps(placements, 8);
+    expect(placements.length).toBeGreaterThan(3000);
+    // Bottom-up ordering still forces one step boundary per occupied layer.
+    expect(steps.length).toBeLessThan(150);
+    expect(steps.reduce((n, s) => n + s.placements.length, 0)).toBe(placements.length);
+    // Nothing may be asked for before the layer beneath it is finished.
+    let lastY = -1;
+    for (const step of steps) {
+      const y = step.placements[0].y;
+      expect(y).toBeGreaterThanOrEqual(lastY);
+      lastY = y;
+    }
+  });
+});
+
+describe('revolve mode', () => {
+  it('builds the handle a lathe cannot reach', () => {
+    // A body of revolution cannot describe a handle. Dropping it is worse than
+    // the old bug that fattened the whole mug to swallow it: a mug without its
+    // handle is not a mug. The lathe fills the body and the silhouette fills
+    // the rest.
+    const width = 200;
+    const height = 160;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    const mask = new Uint8Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      rgba[i * 4] = 230;
+      rgba[i * 4 + 1] = 230;
+      rgba[i * 4 + 2] = 230;
+      rgba[i * 4 + 3] = 255;
+    }
+    // Body 40..100, detached handle 120..140.
+    for (let y = 30; y < 130; y++) {
+      for (let x = 40; x < 100; x++) mask[y * width + x] = 1;
+      if (y > 55 && y < 105) for (let x = 120; x < 140; x++) mask[y * width + x] = 1;
+    }
+
+    const result = generateModel([{ rgba, mask, width, height, azimuth: 0 }], {
+      ...DEFAULT_OPTIONS,
+      studsWide: 24,
+      solidMode: 'revolve',
+    });
+
+    // The handle sits well to the right of the body, so the model has to reach
+    // beyond the body's own radius.
+    const rightmost = result.placements.reduce((m, p) => Math.max(m, p.x + p.w), 0);
+    expect(rightmost).toBeGreaterThan(result.gridX * 0.7);
+    expect(result.fidelity.silhouetteIoU).toBeGreaterThan(0.85);
   });
 });
