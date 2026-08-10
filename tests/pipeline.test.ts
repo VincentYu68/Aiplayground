@@ -1575,3 +1575,47 @@ describe('the things you take away with you', () => {
     expect(lines.length).toBe(result.partsList.length + 1);
   });
 });
+
+describe('the running bond', () => {
+  it('buys its bond by spanning joints, not by shrinking the parts', () => {
+    // The score used to punish a part for reproducing a joint below without
+    // ever rewarding it for spanning one, so the cheapest way to score well
+    // was to place parts with as little boundary as possible. The tiler bought
+    // its bond by fragmenting the model, which is the opposite of what a
+    // running bond is for: across the corpus that cost 31% of the part count
+    // and 2.5x the 1x1 bricks against no bond at all.
+    const grid = new VoxelGrid(16, 6, 16);
+    for (let y = 0; y < 6; y++)
+      for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) grid.set(x, y, z, 0);
+
+    const result = tileGrid(grid, new Uint8Array(grid.cells.length), [{ ldraw: 15 }], {
+      useBricks: true,
+      restarts: 3,
+      seed: 1,
+    });
+
+    const meanArea =
+      result.placements.reduce((n, p) => n + p.w * p.d, 0) / result.placements.length;
+    const ones = result.placements.filter((p) => p.w === 1 && p.d === 1).length;
+
+    // A solid block has no excuse for small parts.
+    expect(meanArea).toBeGreaterThan(8);
+    expect(ones).toBe(0);
+    // And it still has to be bonded: joints must not stack up course on course.
+    expect(result.seamAlignment).toBeLessThan(0.25);
+  });
+
+  it('keeps whole models in one piece at the shipped weights', () => {
+    // The weights sit on a measured trade-off, so the thing to guard is the
+    // property they were chosen for: every model one connected assembly.
+    const solid = SOLIDS.find((s) => s.name === 'mug')!;
+    const result = generateModel([renderView(solid, 0, 200)], {
+      ...DEFAULT_OPTIONS,
+      studsWide: 20,
+    });
+    expect(result.stability.assemblies).toBe(1);
+    expect(result.stability.grounded).toBe(true);
+    expect(result.stability.seamAlignment).toBeLessThan(0.35);
+    expect(result.stability.score).toBeGreaterThanOrEqual(95);
+  });
+});

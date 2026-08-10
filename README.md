@@ -9,7 +9,7 @@ server, no upload, and no API key.
 ```bash
 npm install
 npm run dev           # http://localhost:5173
-npm test              # 93 tests over the generator, the cut-out and the shape
+npm test              # 95 tests over the generator, the cut-out and the shape
 npm run build         # static site in dist/
 npm run build:single  # one self-contained page, dist-single/brickify.html
 ```
@@ -33,8 +33,8 @@ responsive. Use the normal build anywhere a second file can be served.
 3. **Samples it onto the LEGO lattice** — 8mm across, 3.2mm per plate — and
    reduces the colours to a chosen number of real LEGO colours using CIEDE2000.
 4. **Chooses the bricks**, scoring every candidate placement for size, stud
-   overlap and — most importantly — whether it reproduces a joint in the course
-   below.
+   overlap and — most importantly — how it sits against the joints in the course
+   below: punished for reproducing one, rewarded for spanning one.
 5. **Checks that it holds together**, repairs what it can, and reports what it
    could not.
 6. **Writes the manual**: a 3D viewer you can step through, plus LDraw, a
@@ -534,25 +534,57 @@ about how gentle the instructions are, and at its default of eight it produced
 with the ceiling, and then the steps grow instead of the manual. Across the
 corpus the manual now settles at 112–138 steps rather than 112–491.
 
-### What is still coarse
+### What the bond costs, measured
 
-Between a quarter and two fifths of every model is 1x1 bricks. That is worth
-knowing about because it is neither a bug nor a tuning oversight — it was
-measured, twice, and both attempts to fix it made the model worse:
+Two things were true at once: the model was a third smaller than it needed to
+be, and the reason was not the one that looked obvious.
 
-- Colour is not the cause. Rebuilding the whole corpus in a *single* colour, so
-  that no colour boundary constrains any part, only moves the 1x1 share from
-  34% to 28%.
-- Painting the enclosed interior one colour, on the theory that nobody can see
-  inside a hollow model, is worse than not doing it: 1591 parts becomes 2824 and
-  stability falls from 99 to 87. Repainting the core of an otherwise uniform
-  solid region *adds* a colour boundary where there was none.
-- A three-stud shell instead of two is worse on both counts at once — more parts
-  **and** a higher 1x1 share.
+Colour is not the cause. Rebuilding the whole corpus in a *single* colour, so
+that no colour boundary constrains any part anywhere, only moves the 1x1 share
+from 34% to 28%. Painting the enclosed interior one colour — on the theory that
+nobody can see inside a hollow model — is much worse than not doing it: 1591
+parts becomes 2824 and stability falls from 99 to 87, because repainting the
+core of an otherwise uniform region *adds* a boundary where there was none. A
+three-stud shell instead of two is worse on both counts at once.
 
-What is left is geometric. A hollow shell two studs thick over a curved surface
-is a staircase one or two cells wide in plan, and a rectangle cannot follow a
-diagonal. Fixing it means changing the geometry, not the tiler.
+The cause was the bond score, and it was one-sided. Reproducing a joint in the
+course below was punished; **spanning** one was not rewarded at all. Under a
+penalty with no matching reward, the cheapest way for a part to score well is to
+have as little boundary as possible — so the tiler bought its bond by using
+smaller parts, which is close to the opposite of what a running bond is for.
+Turning the penalty off entirely dropped the corpus from 11875 parts to 8215 and
+the 1x1 count from 4282 to 1597: the bond, as scored, was costing 31% of the
+build.
+
+Sweeping the penalty against everything it is supposed to buy shows it was also
+set well past the knee of its own curve:
+
+| seam penalty | parts | 1x1 | stability | joints aligned | models in pieces |
+|---|---|---|---|---|---|
+| 0 | 8215 | 19% | 91.5 | 33% | 1 |
+| 4 | 8783 | 24% | 93.9 | 28% | 1 |
+| 6 | 10311 | 35% | 98.0 | 20% | 0 |
+| 8 | 10667 | 38% | 98.5 | 19% | 0 |
+| 14 *(as shipped)* | 11875 | 36% | 98.6 | 17% | 0 |
+
+Everything from 6 upwards produces one connected model. Going from 6 to 14 buys
+six tenths of a stability point for 15% more parts.
+
+So the reward was added — joints below that fall strictly inside a part's
+footprint, counted in constant time from a second pair of prefix sums — and the
+penalty was re-tuned against it over a two-dimensional sweep. At a penalty of 8
+and a reward of 4 the corpus builds in **10379 parts against 11875**, with the
+*highest* mean stability in the whole sweep (98.8), the highest worst-case
+model (98), and the same joint alignment. The test mug goes from 1591 parts to
+1293, and from 34% 1x1 to 28%.
+
+What is left is genuinely geometric, and it is the reason the share does not
+fall further: a hollow shell two studs thick over a curved surface is a
+staircase one or two cells wide in plan, and a rectangle cannot follow a
+diagonal. There are settings that do better on parts — a penalty of 2 with a
+reward of 12 reaches 8680 parts and 22% 1x1 — but they take the worst model in
+the corpus from 98 to 89 and add 44% more parts the builder has to hold in
+mid-air. That is a worse model, not a cheaper one.
 
 ## Credits
 

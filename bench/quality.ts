@@ -62,7 +62,8 @@ for (const scene of corpus) {
       `steps=${String(r.steps.length).padStart(4)} ` +
       `1x1=${String(oneByOne).padStart(5)} (${((oneByOne / r.totalParts) * 100).toFixed(0)}%) ` +
       `IoU=${(r.fidelity.silhouetteIoU * 100).toFixed(1)}% dE=${r.fidelity.meanDeltaE.toFixed(1)} ` +
-      `score=${r.stability.score} held=${r.stability.cantilevered} ` +
+      `score=${r.stability.score} seam=${(r.stability.seamAlignment * 100).toFixed(0)}% ` +
+      `asm=${r.stability.assemblies} held=${r.stability.cantilevered} ` +
       `colours=${new Set(r.partsList.map((p) => p.colorName)).size} ` +
       `${r.gridX}x${r.gridY}x${r.gridZ} ${(r.elapsedMs / 1000).toFixed(1)}s`,
   );
