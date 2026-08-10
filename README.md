@@ -231,16 +231,25 @@ colour models do not care about resolution.
 ## How good is the 3D, actually
 
 `bench/run3d.ts` renders known solids — sphere, box, cylinder, mug, chair,
-dumbbell, stair, torus, teapot — from N angles using the pipeline's own
-projection convention, runs the real pipeline, and scores the *volume* it
-produces against the solid it came from.
+dumbbell, stair, torus, teapot, and then a person, a car, a bag and a flat
+drawing — from N angles using the pipeline's own projection convention, runs the
+real pipeline, and scores the *volume* it produces against the solid it came
+from.
 
-| photos | mean 3D IoU | what the app used to report |
+| photos | mean 3D IoU | what the app reports instead |
 |---|---|---|
-| 1 | 53.0% | 97.7% silhouette match |
-| 2 | 70.8% | 97.3% |
-| 4 | 76.6% | 97.0% |
-| 8 | 78.1% | 97.0% |
+| 1 | 43.3% | 97.3% silhouette match |
+| 2 | 66.1% | 97.3% |
+| 4 | 70.6% | 97.2% |
+| 8 | 71.4% | 97.1% |
+
+Those are lower than the figures this section used to quote (53.0 / 70.8 / 76.6
+/ 78.1) for a boring reason worth stating plainly: the corpus grew from nine
+solids to thirteen, and the four that were added — a person, a car, a bag and a
+flat drawing — are the hard ones. The old numbers were never re-measured against
+the bigger corpus, so the README quietly kept claiming the easier average. The
+per-solid figures quoted further down were not affected, and the sweeps below
+that are explicitly marked as measured on the original nine.
 
 That gap is the whole problem, and it is now stated in the UI rather than left
 to be discovered by orbiting the model: matching the outline of the one photo
@@ -250,9 +259,9 @@ Three things came out of building this.
 
 **The single-view depth prior was wrong by a factor of two.** `depthScale`
 defaulted to 0.55 — peak thickness as a fraction of width — which made a sphere
-just over half as deep as it is wide. Measured across the corpus, mean 3D IoU
-runs 40.9% at 0.4, 43.8% at 0.55, 51.9% at 0.85 and 53.0% at 1.0. The default is
-now 1.0: assume a roughly circular cross-section, "as deep as it is wide".
+just over half as deep as it is wide. Measured across the original nine-solid
+corpus, mean 3D IoU runs 40.9% at 0.4, 43.8% at 0.55, 51.9% at 0.85 and 53.0% at
+1.0. The default is now 1.0: assume a roughly circular cross-section, "as deep as it is wide".
 
 **A cylinder and a box cast the same silhouette.** From one photograph they are
 the same rectangle, and no geometric rule can separate them — the change above
@@ -274,8 +283,8 @@ from one photograph a cylinder and a box cast exactly the same rectangle, and no
 silhouette analysis can separate them.
 
 How much is that knowledge worth? The benchmark answers it directly. The best
-single fixed depth prior reaches **53.7%** mean 3D IoU; an oracle allowed to pick
-the right prior per object reaches **65.1%**. The gap is concentrated exactly
+single fixed depth prior reaches **53.7%** mean 3D IoU on the original nine
+solids; an oracle allowed to pick the right prior per object reaches **65.1%**. The gap is concentrated exactly
 where geometry is blind:
 
 | object | oracle pick | oracle | fixed prior | gain |
@@ -336,6 +345,9 @@ volume: a voxel in empty space is seen as different colours by different
 cameras, a voxel on a real surface is not. Implemented with visibility recomputed
 per pass and silhouette protection, then swept over the disagreement threshold:
 
+(Measured on the original nine solids, which is why the "off" column does not
+match the table at the top of this section.)
+
 | CIEDE2000 tolerance | off | 6 | 8 | 10 | 12 |
 |---|---|---|---|---|---|
 | 2 views | 70.8% | 55.5% | 55.5% | 60.4% | 65.3% |
@@ -349,8 +361,10 @@ is not worth shipping, so it was taken out.
 
 ### What is still wrong
 
-The mean hides two shapes. At eight views: mug 37%, teapot 24%, with the teapot
-carrying 316% more volume than it should. Everything else is 84–98%. Both fail
+The mean hides its failures. At eight views: mug 37%, teapot 24%, with the
+teapot carrying 316% more volume than it should — and, among the solids added
+later, car 43%, drawing 57%, person 57%, bag 66%. The nine that were there
+first are 84–98% apart from those two. The mug and the teapot fail
 the same way — a visual hull cannot see a hollow nothing looks into (a mug's
 bore) and cannot remove the space trapped between parts that stick out (a
 spout and a handle both sweep wedges, and every camera sees material in the slab
@@ -455,7 +469,7 @@ On a synthetic head, wrapping removes skin tones from the back entirely
 (under 2% of the rear surface, against 33% when mirrored) while leaving the
 photographed front pixel-for-pixel identical.
 
-## Two findings worth knowing about
+## Three findings worth knowing about
 
 **Colour boundaries are structural.** A part can only be one colour, so a colour
 boundary is a line no part can cross. A photo with broad vertical shading — a
