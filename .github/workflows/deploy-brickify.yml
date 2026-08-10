@@ -3,6 +3,11 @@ name: Deploy Brickify to GitHub Pages
 on:
   push:
     branches:
+      # The branch this app is developed on. The older branch below is where it
+      # started; it is kept so an older build can still be republished, but
+      # nothing is pushed to it any more — two live branches would take turns
+      # overwriting the one Pages site this repository has.
+      - claude/photo-lego-manual-app-lufbep
       - claude/photo-lego-assembly-manual-otvt8e
   workflow_dispatch:
 
