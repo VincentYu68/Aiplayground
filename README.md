@@ -9,7 +9,7 @@ server, no upload, and no API key.
 ```bash
 npm install
 npm run dev           # http://localhost:5173
-npm test              # 81 tests over the generator, the cut-out and the shape
+npm test              # 93 tests over the generator, the cut-out and the shape
 npm run build         # static site in dist/
 npm run build:single  # one self-contained page, dist-single/brickify.html
 ```
@@ -64,6 +64,27 @@ the same thing:
 as intersection-over-union against the cut-out, and mean CIEDE2000 colour error
 against the source pixels. The front-on model preview is drawn at the real
 8 : 3.2 stud-to-plate ratio so the side-by-side comparison is honest.
+
+Both of those numbers were wrong, and both were wrong in the flattering
+direction, which is the way a metric fails when nobody has tried to break it.
+
+- *Colour error* was re-derived by mapping grid columns across the whole image,
+  while the grid had been sampled across the object's **bounding box**. Any
+  photo with margin around the object was therefore scored against the wrong
+  pixels: padding a photo with background moved the reported error on an
+  identical model from 9.6 to 17.8. The colour a column was sampled from is now
+  carried with the column, so the two cannot drift apart, and it is compared
+  against the colour the model actually ended up with rather than the one the
+  column asked for. Reported error across the corpus fell from 15.8 to 6.3 on
+  the mug and 27.3 to 10.6 on the book — the models did not change, only the
+  honesty of the number.
+- *Silhouette match* was measured after cropping the silhouette to the model's
+  own extent, which hid the single failure most worth seeing: a feature the
+  model dropped **entirely** fell outside the window and stopped counting as
+  missing. It is now counted before the crop.
+
+A metric that is only ever read when it looks good is not a measurement. Both
+have regression tests that assert the specific way they used to lie.
 
 ## Cutting the object out
 
@@ -147,7 +168,17 @@ npm run bench            # score the cut-out methods
 npm run bench -- --dump  # write PNGs + manifest for external tools
 npm run bench:browser    # score the shipped browser path in Chromium
 npm run bench:3d         # score the reconstructed volume against known solids
+npm run bench:quality    # build the corpus and render what each model looks like
+npm run bench:photos     # write corpus scenes out as PNGs, for the checks below
+npm run e2e              # drive the built app in Chromium, one photo at a time
+npm run e2e:multiview    # same, adding a second angle through the real UI
 ```
+
+`bench:quality` exists because scoring a model is not the same as looking at
+one. It writes a front-on render of every model next to its part count, 1x1
+share, colour count and both fidelity numbers — which is how the grey mug, the
+magenta bricks on the red car, the striped mug band and the speckle from the
+per-course colour jitter were all found. Every one of those scored fine.
 
 ### The fallback: GrabCut
 
@@ -356,6 +387,41 @@ inside of a bowl seen only from outside. That is a property of shape-from-
 silhouette, not of this implementation. With a single photo the app falls back
 to silhouette extrusion and says so in the report.
 
+## Turning something on a lathe
+
+Revolve mode is where the recogniser sends every mug, vase, bottle and lamp, so
+it is worth it being right. It was wrong in three separate ways, all of which
+showed up the moment the finished model was rendered next to its photo instead
+of only scored.
+
+**The axis and the radius came from the row's leftmost and rightmost object
+pixel.** A mug's handle is part of the silhouette, so that span covered the body,
+the gap *and* the handle: the radius came out about 40% too large and the axis
+25px off centre. The body is now the widest **contiguous** run in each row — a
+detached handle is a different run and drops out — with the axis as the
+width-weighted median of those runs' centres, which survives the few rows where
+the handle really does touch the body. The radius is the *smaller* of the two
+distances from the axis to the ends of the run through it, because it is the
+handle's side that is inflated when they merge.
+
+**Colour was sampled at the matching distance from the axis.** Every voxel on
+the outer surface sits at the full radius, so the whole body took the colour of
+the silhouette edge — the grazing, most-shaded pixels in the photo — and a white
+mug came out mid-grey. Worse, sampling that far out lands on the anti-aliased
+boundary, where a rounded lookup falls outside the mask about half the time; the
+voxel was skipped and the colour came from whatever sat behind it, striping the
+band into ribbons. A lathe-turned object is one colour all the way round at a
+given height, and the honest place to read it is where the surface faces the
+camera.
+
+**A lathe cannot make a handle, and dropping it is not the answer.** With the
+axis fixed, the handle stopped being swallowed into a fattened body — and simply
+disappeared, taking the silhouette match from 98.9% to 89.8%. A mug without its
+handle is not a mug. The lathe now reports which columns the body covers and the
+silhouette extrudes whatever lies outside it, so the body is still a true solid
+of revolution and the handle is still there. Back to 98.3%, at 1137 parts
+against the 1264 of the version that had no handle at all.
+
 ## The side the camera never saw
 
 Half of any solid model is a side the photograph does not show, and the
@@ -425,8 +491,54 @@ result most:
   is a one-plate ring overhanging the layer beneath, which roughly doubles the
   part count and tends to leave the model in sections. The stability score says
   so when it happens.
-- **Colours** trades fidelity against cost and strength. More colours track the
-  photo more closely but make narrower bands, which forces smaller parts.
+- **Colours** is a *cap*, not a target. More colours track the photo more closely
+  but make narrower bands, which forces smaller parts, so the budget is only
+  spent while spending it measurably helps: colours are added one at a time,
+  each time whichever LEGO colour most reduces the error actually being made,
+  stopping when the next one would improve the mean by less than a third of a
+  ΔE unit. Asking for 12 typically gets 3–7. Before this, cluster centres were
+  snapped onto *distinct* colours, so a second cluster that also wanted White
+  was pushed onto whatever was next — a white mug came out in two greys, and a
+  red car had magenta bricks in it.
+
+### Two things the app decides for you
+
+**Height is capped at 40 courses (about 39cm).** Width sets the width and the
+height follows from the object's proportions, which is fine right up until
+someone photographs a bottle: at the default 32 studs the test bottle came out
+225 plates tall — 72cm, 3678 parts and 489 steps — from a setting that produces
+a sensible model for anything roughly as tall as it is wide. Nobody chose that.
+The width is reduced until the model fits, and the report says so and by how
+much. The bottle becomes 18 studs, 38cm, 1134 parts. Ordinary proportions are
+untouched. There is a floor of 6 studs, so something as extreme as a pencil
+still ends up over the cap — better a little too tall than four studs of
+nothing.
+
+**The manual will not exceed about 120 steps.** "Parts per step" is a preference
+about how gentle the instructions are, and at its default of eight it produced
+489 steps for that bottle and 211 for a mug. It is honoured until it collides
+with the ceiling, and then the steps grow instead of the manual. Across the
+corpus the manual now settles at 112–138 steps rather than 112–491.
+
+### What is still coarse
+
+Between a quarter and two fifths of every model is 1x1 bricks. That is worth
+knowing about because it is neither a bug nor a tuning oversight — it was
+measured, twice, and both attempts to fix it made the model worse:
+
+- Colour is not the cause. Rebuilding the whole corpus in a *single* colour, so
+  that no colour boundary constrains any part, only moves the 1x1 share from
+  34% to 28%.
+- Painting the enclosed interior one colour, on the theory that nobody can see
+  inside a hollow model, is worse than not doing it: 1591 parts becomes 2824 and
+  stability falls from 99 to 87. Repainting the core of an otherwise uniform
+  solid region *adds* a colour boundary where there was none.
+- A three-stud shell instead of two is worse on both counts at once — more parts
+  **and** a higher 1x1 share.
+
+What is left is geometric. A hollow shell two studs thick over a curved surface
+is a staircase one or two cells wide in plan, and a rectangle cannot follow a
+diagonal. Fixing it means changing the geometry, not the tiler.
 
 ## Credits
 

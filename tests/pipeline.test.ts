@@ -30,7 +30,8 @@ import {
 } from '../src/core/lego/colors';
 import { platesForAspect } from '../src/core/lego/units';
 import { toLdraw } from '../src/core/export/ldraw';
-import { buildPartsList } from '../src/core/export/bom';
+import { toPrintableManual } from '../src/core/export/manual';
+import { buildPartsList, partsListToBricklinkXml, partsListToCsv } from '../src/core/export/bom';
 import { distanceTransform, fillHoles, keepLargestComponents } from '../src/core/image/raster';
 import { segment } from '../src/core/image/segment';
 import { MaxFlow } from '../src/core/image/maxflow';
@@ -1526,5 +1527,51 @@ describe('revolve mode', () => {
     const rightmost = result.placements.reduce((m, p) => Math.max(m, p.x + p.w), 0);
     expect(rightmost).toBeGreaterThan(result.gridX * 0.7);
     expect(result.fidelity.silhouetteIoU).toBeGreaterThan(0.85);
+  });
+});
+
+describe('the things you take away with you', () => {
+  const width = 120;
+  const height = 120;
+  const { rgba } = makeTestImage(width, height);
+  const mask = discMask(width, height);
+  const result = generateModel([{ rgba, mask, width, height, azimuth: 0 }], {
+    ...DEFAULT_OPTIONS,
+    studsWide: 16,
+    seed: 7,
+  });
+
+  it('writes a printable manual covering every step', () => {
+    const html = toPrintableManual(result, 'Test model');
+    expect(html).toContain('Test model');
+    const headings = html.match(/<h2>Step \d+/g) ?? [];
+    expect(headings.length).toBe(result.steps.length);
+    // Every part in the build has to appear in some step of the manual.
+    const inSteps = result.steps.reduce((n, s) => n + s.placements.length, 0);
+    expect(inSteps).toBe(result.totalParts);
+  });
+
+  it('writes a Bricklink wanted list that adds up to the build', () => {
+    const xml = partsListToBricklinkXml(result.partsList);
+    const items = xml.match(/<ITEM>/g) ?? [];
+    expect(items.length).toBe(result.partsList.length);
+
+    const quantities = [...xml.matchAll(/<MINQTY>(\d+)<\/MINQTY>/g)].map((m) => Number(m[1]));
+    expect(quantities.reduce((a, b) => a + b, 0)).toBe(result.totalParts);
+
+    // Every line needs a real Bricklink colour and a real element number: an
+    // entry Bricklink cannot resolve makes the whole upload fail.
+    const colours = [...xml.matchAll(/<COLOR>(-?\d+)<\/COLOR>/g)].map((m) => Number(m[1]));
+    expect(colours.length).toBe(result.partsList.length);
+    for (const c of colours) expect(c).toBeGreaterThan(0);
+    for (const id of [...xml.matchAll(/<ITEMID>([^<]+)<\/ITEMID>/g)].map((m) => m[1])) {
+      expect(id).toMatch(/^\d+$/);
+    }
+  });
+
+  it('writes a CSV with one line per colour and part', () => {
+    const csv = partsListToCsv(result.partsList);
+    const lines = csv.trim().split('\n');
+    expect(lines.length).toBe(result.partsList.length + 1);
   });
 });
