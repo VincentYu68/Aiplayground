@@ -9,8 +9,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 
-const PORT = 5205;
-const OUT = resolve('bench/out/gallery');
+const PORT = Number(process.env.BENCH_PORT ?? 5205);
+const OUT = resolve(process.env.BENCH_OUT ?? 'bench/out/gallery');
 mkdirSync(OUT, { recursive: true });
 
 const [solid, ...angles] = process.argv.slice(2);
@@ -44,7 +44,7 @@ async function waitForServer(url, timeoutMs = 60000) {
 
 const server = spawn(
   'npx',
-  ['vite', 'preview', '--port', String(PORT), '--strictPort', '--host', '127.0.0.1'],
+  ['vite', 'preview', ...(process.env.BENCH_DIST ? ['--outDir', process.env.BENCH_DIST] : []), '--port', String(PORT), '--strictPort', '--host', '127.0.0.1'],
   { stdio: 'ignore' },
 );
 process.on('exit', () => server.kill());

@@ -25,7 +25,7 @@ import { chromium } from 'playwright-core';
 
 const OUT = resolve(process.argv[2] ?? 'bench/out/browser-masks');
 const BENCH = resolve('bench/out');
-const PORT = 5178;
+const PORT = Number(process.env.BENCH_PORT ?? 5178);
 
 function findChromium() {
   if (process.env.CHROMIUM_PATH) return process.env.CHROMIUM_PATH;
