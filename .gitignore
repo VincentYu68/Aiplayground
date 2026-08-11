@@ -4,6 +4,8 @@ dist/
 .DS_Store
 tsconfig.tsbuildinfo
 dist-single/
+# Per-run build outputs, so several benches can be served at once.
+dist-*/
 public/ort/
 bench/out/
 bench/out3d/
