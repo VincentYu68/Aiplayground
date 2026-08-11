@@ -97,6 +97,16 @@ export interface HullOptions {
 }
 
 export interface HullResult {
+  /**
+   * Per view, the number of voxels that view alone rejected while every other
+   * view accepted them.
+   *
+   * A visual hull is an intersection, so one bad cut-out silently removes
+   * material every other photograph agreed was there — and the user is handed
+   * a model with most of the object missing and nothing pointing at the photo
+   * responsible. This is what makes that attributable.
+   */
+  vetoes: Int32Array;
   /** 1 where the object is, indexed [(y * sz + z) * sx + x]. */
   occupancy: Uint8Array;
   sx: number;
@@ -132,6 +142,8 @@ export function carveVisualHull(viewsIn: View[], options: HullOptions): HullResu
 
   const occupancy = new Uint8Array(sx * sy * sz);
   const allowedMisses = Math.max(0, Math.min(views.length - 1, options.tolerance));
+  /** Voxels each view alone removed, which every other view agreed were solid. */
+  const vetoes = new Int32Array(views.length);
 
   for (let gy = 0; gy < sy; gy++) {
     const y = (gy + 0.5) * unitsPerPlate;
@@ -141,6 +153,10 @@ export function carveVisualHull(viewsIn: View[], options: HullOptions): HullResu
         const x = -extent + (gx + 0.5) * unitsPerStud;
 
         let misses = 0;
+        // Which view rejected it, when exactly one did. A voxel every
+        // photograph but one agrees on is the evidence that that one photo's
+        // cut-out is wrong, and it is the only place that evidence exists.
+        let soleObjector = -1;
         for (let vi = 0; vi < views.length; vi++) {
           const v = views[vi];
           const u = x * v.cos + z * v.sin;
@@ -152,14 +168,19 @@ export function carveVisualHull(viewsIn: View[], options: HullOptions): HullResu
             px < v.width &&
             py < v.height &&
             v.mask[py * v.width + px] === 1;
-          if (!inside && ++misses > allowedMisses) break;
+          if (!inside) {
+            misses++;
+            soleObjector = misses === 1 ? vi : -1;
+            if (misses > allowedMisses && misses > 1) break;
+          }
         }
+        if (misses === 1 && soleObjector >= 0) vetoes[soleObjector]++;
         if (misses <= allowedMisses) occupancy[(gy * sz + gz) * sx + gx] = 1;
       }
     }
   }
 
-  return { occupancy, sx, sy, sz, unitsPerStud, extent, views };
+  return { occupancy, sx, sy, sz, unitsPerStud, extent, views, vetoes };
 }
 
 /**

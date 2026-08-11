@@ -170,6 +170,14 @@ export interface BuildResult {
    * build, and was reduced. Null when the width was used as asked for.
    */
   sizeLimited: { requested: number; used: number } | null;
+  /**
+   * Set when one photograph's cut-out disagrees with all the others.
+   *
+   * The carve is an intersection, so a single bad outline deletes material
+   * every other photo agreed was there — and the result is a model with most
+   * of the object missing and no clue which photo caused it.
+   */
+  viewConflict: { view: number; sharePercent: number } | null;
   /** Wall-clock time of the generation pass. */
   elapsedMs: number;
 }

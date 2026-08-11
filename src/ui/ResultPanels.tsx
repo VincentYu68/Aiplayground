@@ -70,6 +70,18 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
           </dd>
           <p>Average perceptual distance from the photo to the nearest LEGO colour.</p>
         </div>
+        {result.viewConflict && (
+          <div>
+            <dt>Photo {result.viewConflict.view + 1} disagrees</dt>
+            <dd>{result.viewConflict.sharePercent}% of what was cut away</dd>
+            <p>
+              The shape is the part of the object every photo agrees on, so one bad
+              outline deletes material the others found. Photo{' '}
+              {result.viewConflict.view + 1} removed most of it on its own — check its
+              cut-out, or raise the tolerance so a single photo cannot veto.
+            </p>
+          </div>
+        )}
         {result.sizeLimited && (
           <div>
             <dt>Size</dt>

@@ -84,6 +84,7 @@ export function generateModel(
   const { options, requestedStudsWide } = fitToBuildableHeight(views, requestedOptions);
 
   let voxelResult;
+  let viewConflict: BuildResult['viewConflict'] = null;
   if (multiView) {
     onProgress('Carving the shape from the silhouettes', 0.1);
     const hull = carveVisualHull(views, {
@@ -91,6 +92,21 @@ export function generateModel(
       tolerance: options.hullTolerance,
     });
     if (!hull) throw new Error('No object found in the photos');
+    // One photo removing far more than its share of the material that every
+    // other photo agreed on means its cut-out is wrong, not that the object is
+    // that shape.
+    const totalVetoes = hull.vetoes.reduce((a, b) => a + b, 0);
+    if (totalVetoes > 0) {
+      let worst = 0;
+      for (let i = 1; i < hull.vetoes.length; i++) {
+        if (hull.vetoes[i] > hull.vetoes[worst]) worst = i;
+      }
+      const share = hull.vetoes[worst] / totalVetoes;
+      const evenShare = 1 / hull.vetoes.length;
+      if (hull.vetoes.length > 1 && share > Math.max(0.6, evenShare * 2)) {
+        viewConflict = { view: worst, sharePercent: Math.round(share * 100) };
+      }
+    }
     onProgress('Colouring from the photos', 0.25);
     voxelResult = voxelizeFromHull(hull, options.maxColors, options.seed);
   } else {
@@ -218,6 +234,7 @@ export function generateModel(
     dimensionsMM: modelDimensionsMM(grid.sx, grid.sy, grid.sz),
     viewsUsed: views.length,
     geometry: multiView ? 'visual-hull' : 'extruded',
+    viewConflict,
     sizeLimited:
       requestedStudsWide === null
         ? null

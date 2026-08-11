@@ -1619,3 +1619,40 @@ describe('the running bond', () => {
     expect(result.stability.score).toBeGreaterThanOrEqual(95);
   });
 });
+
+describe('when the photos disagree', () => {
+  it('names the photo whose cut-out deleted the model', () => {
+    // A visual hull is an intersection, so one bad outline removes material
+    // every other photograph agreed was there. The model comes back mostly
+    // missing, and without this there is nothing pointing at the photo
+    // responsible — which is exactly what happened driving four renders of a
+    // chair through the app: one cut-out kept only the seat, and the build
+    // collapsed to three parts at 4% silhouette match with no explanation.
+    const width = 160;
+    const height = 160;
+    const rgba = new Uint8ClampedArray(width * height * 4).fill(200);
+
+    const full = new Uint8Array(width * height);
+    for (let y = 30; y < 130; y++) for (let x = 40; x < 120; x++) full[y * width + x] = 1;
+    // The third photo's cut-out keeps only part of the object's width. It has
+    // to stay full height: every view is scaled to a common object height, so a
+    // vertically clipped mask is stretched back up rather than vetoing anything.
+    const clipped = new Uint8Array(width * height);
+    for (let y = 30; y < 130; y++) for (let x = 40; x < 70; x++) clipped[y * width + x] = 1;
+
+    const view = (mask: Uint8Array, azimuth: number) => ({ rgba, mask, width, height, azimuth });
+    const good = generateModel(
+      [view(full, 0), view(full, 90), view(full, 45)],
+      { ...DEFAULT_OPTIONS, studsWide: 16 },
+    );
+    expect(good.viewConflict).toBeNull();
+
+    const bad = generateModel(
+      [view(full, 0), view(full, 90), view(clipped, 45)],
+      { ...DEFAULT_OPTIONS, studsWide: 16 },
+    );
+    expect(bad.viewConflict).not.toBeNull();
+    expect(bad.viewConflict!.view).toBe(2);
+    expect(bad.viewConflict!.sharePercent).toBeGreaterThan(60);
+  });
+});
