@@ -84,6 +84,7 @@ export default function App() {
           ...current,
           solidMode: message.prior!.solidMode,
           depthScale: message.prior!.depthScale,
+          roundness: message.prior!.roundness,
         }));
         setPriorNote(message.prior.explanation);
         setDirty(true);
@@ -166,6 +167,7 @@ export default function App() {
         encoder: new URL('models/mobilesam-encoder.onnx', document.baseURI).href,
         decoder: new URL('models/mobilesam-decoder.onnx', document.baseURI).href,
         classifier: new URL('models/mobilenet-classifier.onnx', document.baseURI).href,
+        depth: new URL('models/depth-anything-v2-small-int8.onnx', document.baseURI).href,
       },
     });
     return () => {

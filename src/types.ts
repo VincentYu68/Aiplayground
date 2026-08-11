@@ -18,8 +18,17 @@ export type BuildResolution = 'bricks' | 'mixed';
 export interface BuildOptions {
   /** Width of the finished model in studs. Everything else scales from this. */
   studsWide: number;
-  /** Peak thickness as a fraction of the model's width. */
+  /**
+   * Depth as a fraction of the object's **short visible axis**, not of the
+   * photo's width. Anchoring it to the width made every elongated object as deep
+   * as it is long, which is how a car came out as a cube.
+   */
   depthScale: number;
+  /**
+   * How the cross-section closes at the silhouette: 1 circular, 0 a slab with a
+   * rounded edge. Set from the shape prior; only the single-photo path uses it.
+   */
+  roundness: number;
   solidMode: SolidMode;
   /** How the unseen far side of the object is coloured. */
   backTreatment: BackTreatment;
@@ -44,14 +53,12 @@ export interface BuildOptions {
 
 export const DEFAULT_OPTIONS: BuildOptions = {
   studsWide: 32,
-  // "As deep as it is wide": assume a roughly circular cross-section. One
-  // photograph cannot show depth, so this is a prior, and it is the best fixed
-  // prior available — measured against known solids in bench/run3d.ts, mean 3D
-  // IoU by this value is 40.9% at 0.4, 43.8% at 0.55 (the old default), 51.9%
-  // at 0.85 and 53.0% at 1.0. The old value made everything about half as deep
-  // as it should be, which is why single-view models read correctly head-on and
-  // fell apart the moment you orbited them.
+  // "About as deep as its short axis". Nothing much is deeper than its own
+  // smallest visible dimension, and for an object photographed square-on this
+  // is the same "roughly circular cross-section" the old default meant — it
+  // only differs, and only helps, when the object is elongated.
   depthScale: 1.0,
+  roundness: 0.55,
   solidMode: 'symmetric',
   // A photo says nothing about the far side. Wrapping the silhouette colours
   // round is a guess; mirroring the front is a confident fabrication, and a
@@ -166,6 +173,15 @@ export interface BuildResult {
   /** Whether the shape was carved from silhouettes or guessed from one view. */
   geometry: 'visual-hull' | 'extruded';
   /**
+   * Where the depth came from, which is a different question from `geometry`.
+   *
+   * 'multi-view'  carved from two or more silhouettes; no depth model involved.
+   * 'measured'    a monocular depth network described the surface facing the camera.
+   * 'guessed'     the weights were unreachable and the shape is the silhouette
+   *               inflated — worth saying out loud, because it looks confident.
+   */
+  depthSource: 'multi-view' | 'measured' | 'guessed';
+  /**
    * Set when the requested width would have produced a model too tall to
    * build, and was reduced. Null when the width was used as asked for.
    */
@@ -224,7 +240,14 @@ export type WorkerRequest =
        * deployed, and this app is mounted in a subdirectory.
        */
       kind: 'configure';
-      urls: { runtime: string; encoder: string; decoder: string; classifier: string };
+      urls: {
+        runtime: string;
+        encoder: string;
+        decoder: string;
+        classifier: string;
+        /** Monocular depth weights; the single-photo path is a bulge without them. */
+        depth: string;
+      };
     }
   | {
       kind: 'build';

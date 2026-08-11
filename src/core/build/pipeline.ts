@@ -5,7 +5,7 @@
  * it runnable in a worker, testable in node, and reproducible for a given seed.
  */
 
-import { estimateDepth } from '../image/depth';
+import { depthFieldFromRelief, estimateDepth } from '../image/depth';
 import { snapToCourses, voxelize } from '../voxel/voxelize';
 import { voxelizeFromHull } from '../voxel/fromHull';
 import { carveVisualHull, type View } from '../multiview/visualHull';
@@ -110,10 +110,20 @@ export function generateModel(
     onProgress('Colouring from the photos', 0.25);
     voxelResult = voxelizeFromHull(hull, options.maxColors, options.seed);
   } else {
-    onProgress('Estimating depth', 0.05);
-    const depth = estimateDepth(primary.rgba, primary.mask, primary.width, primary.height, {
-      shadingInfluence: options.shadingInfluence,
-    });
+    // A measured depth map when the weights are here, the invented bulge when
+    // they are not. These are not two flavours of the same thing: the bulge
+    // makes every object an inflated copy of its own outline, and the whole
+    // reason single-photo models used to read as a loaf. Shading is only
+    // consulted in the fallback, where it is the sole source of relief; against
+    // a real depth map it adds nothing but luminance noise.
+    onProgress(primary.relief ? 'Reading the depth map' : 'Estimating depth', 0.05);
+    const depth = primary.relief
+      ? depthFieldFromRelief(primary.relief, primary.mask, primary.width, primary.height, {
+          roundness: options.roundness,
+        })
+      : estimateDepth(primary.rgba, primary.mask, primary.width, primary.height, {
+          shadingInfluence: options.shadingInfluence,
+        });
 
     onProgress('Sampling onto the stud grid', 0.2);
     voxelResult = voxelize(primary.rgba, primary.mask, primary.width, primary.height, depth, {
@@ -234,6 +244,7 @@ export function generateModel(
     dimensionsMM: modelDimensionsMM(grid.sx, grid.sy, grid.sz),
     viewsUsed: views.length,
     geometry: multiView ? 'visual-hull' : 'extruded',
+    depthSource: multiView ? 'multi-view' : primary.relief ? 'measured' : 'guessed',
     viewConflict,
     sizeLimited:
       requestedStudsWide === null

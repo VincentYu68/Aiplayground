@@ -9,7 +9,7 @@
  */
 
 import { deltaE2000, PALETTE, rgbToLab, type LegoColor } from '../lego/colors';
-import { platesForAspect } from '../lego/units';
+import { platesForAspect, PLATES_PER_STUD } from '../lego/units';
 import { bounds, type Mask } from '../image/raster';
 import { latheProfile, type DepthField } from '../image/depth';
 import { nearestEdgePixel } from '../image/wrap';
@@ -126,6 +126,38 @@ interface ColumnSample {
   back: number;
 }
 
+/**
+ * How many studs deep the model should be.
+ *
+ * This used to be `studsWide * depthScale`, i.e. the model was as deep as the
+ * photograph was *wide*. That is fine for anything roughly square and absurd for
+ * anything else: a car photographed side-on has "wide" equal to its length, so
+ * it was extruded into a cube, and the finished model was a featureless loaf
+ * whose front view happened to look like a car.
+ *
+ * The short axis is a far better anchor, and not by accident. Nothing much is
+ * deeper than its own smallest visible dimension — a car is about as deep as it
+ * is tall, a bottle about as deep as it is wide, a chair about as deep as it is
+ * broad — whereas the long axis carries no information about depth at all. So
+ * the extent is `min(width, height) * depthScale`, with `depthScale` meaning
+ * "depth relative to the short axis" rather than to the width. For a square
+ * object the two definitions agree, which is why the sphere case is unchanged.
+ *
+ * `reliefScale` is the one part of this that is measured rather than assumed,
+ * and it only ever trims. See `reliefScaleFrom`.
+ */
+function depthExtent(
+  gridX: number,
+  gridY: number,
+  depthScale: number,
+  reliefScale: number | null,
+): number {
+  // Y counts plates and X counts studs, and a plate is not a stud tall.
+  const shortAxis = Math.min(gridX, gridY / PLATES_PER_STUD);
+  const ratio = Math.max(0.05, depthScale) * (reliefScale ?? 1);
+  return Math.max(2, Math.round(shortAxis * ratio));
+}
+
 /** Average the source pixels under one grid column. */
 function sampleColumn(
   rgba: Uint8ClampedArray,
@@ -224,7 +256,7 @@ export function voxelize(
   const gridZ =
     options.solidMode === 'revolve'
       ? gridX
-      : Math.max(1, Math.round(gridX * Math.max(0.05, options.depthScale)));
+      : depthExtent(gridX, gridY, options.depthScale, depth.reliefScale);
 
   const pxPerStud = box.width / gridX;
   const pxPerPlate = box.height / gridY;

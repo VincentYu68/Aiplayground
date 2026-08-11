@@ -38,6 +38,16 @@ export interface View {
    * axis. 0 is the front, 90 the right side, 180 the back.
    */
   azimuth: number;
+  /**
+   * Measured inverse relative depth for this photo, larger meaning nearer, on
+   * the photo's own pixel grid. Optional because the weights are a 35MB
+   * background download and the build has to work before they land.
+   *
+   * The carve does not use it — a silhouette intersection is already real
+   * geometry and depth cannot improve on it without a camera model — but the
+   * single-photo path lives or dies by it.
+   */
+  relief?: Float32Array;
 }
 
 /** A view with its silhouette measured and its scale normalised. */

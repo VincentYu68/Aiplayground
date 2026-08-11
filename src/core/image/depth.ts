@@ -1,22 +1,26 @@
 /**
  * Lifting a single photo into a 3D thickness field.
  *
- * One photograph does not contain enough information to recover true geometry,
- * so this combines two cues that are individually weak but complementary:
+ * There are two ways in here and they are not equally good.
  *
- *   - a *bulge profile* derived from the distance transform of the silhouette.
- *     Points deep inside the outline are thick, points near the edge taper to
- *     nothing. That is exactly what a smooth convex object looks like and it
- *     is what makes the finished sculpture read as solid rather than as a
- *     cardboard cut-out.
- *   - a *shading cue* from image luminance, which recovers surface relief
- *     (folds, panel lines, a nose on a face) that the silhouette cannot know
- *     about.
+ * `depthFieldFromRelief` is the real one: it takes a *measured* monocular depth
+ * map (see `monodepth.ts`) and uses it as the surface facing the camera. It
+ * knows that a car's wheels stand in front of its doors and its greenhouse sits
+ * behind them, because a network that has seen 62M images knows that and a
+ * silhouette never can.
  *
- * The result is a normalised thickness in 0..1 per pixel, later scaled to studs.
+ * `estimateDepth` is the fallback for when those 35MB of weights are
+ * unreachable. It invents depth from the distance transform of the silhouette —
+ * thick in the middle, tapering at the edge — which is a *pillow*, not a shape.
+ * Every object comes out as an inflated version of its own outline. It is kept
+ * because a worse shape beats a failed upload, and for no other reason. Do not
+ * treat the two as interchangeable.
+ *
+ * Both produce the same thing: a front and back half-thickness per pixel, in
+ * 0..1 of the model's depth, later scaled to studs by `voxelize`.
  */
 
-import { boxBlur, distanceTransform, type Mask } from './raster';
+import { boxBlur, distanceTransform, erode, type Mask } from './raster';
 
 export interface DepthOptions {
   /** 0 = pure geometric bulge, 1 = pure shading. */
@@ -38,16 +42,250 @@ function luminance(rgba: Uint8ClampedArray, i: number): number {
  * How far the surface sits from the object's centre plane, front and back,
  * each in 0..1 of the model's depth. `front + back` peaks at exactly 1.
  *
- * They are separate because the two sides are known to different degrees. The
- * silhouette constrains both equally, but shading only ever describes the side
- * facing the camera — mirroring it onto the back puts a second nose on the back
- * of a head.
+ * They are separate because the two sides are known to different degrees. A
+ * photograph describes exactly one surface — the one facing the camera — and
+ * the back has to be invented no matter how good the depth map is. Mirroring
+ * measured relief onto the back puts a second nose on the back of a head, so
+ * the back is a smooth closure and the front carries all the detail.
  */
 export interface DepthField {
   front: Float32Array;
   back: Float32Array;
+  /**
+   * Multiplier on the depth prior, measured from how much relief the depth map
+   * actually contains, or null when there was nothing to measure. 1 leaves the
+   * prior untouched; below 1 says the object is flatter than its proportions
+   * suggest. Deliberately a small correction — see `reliefScaleFrom`.
+   */
+  reliefScale: number | null;
 }
 
+export interface ReliefOptions {
+  /**
+   * Cross-section between a slab and a circle: 0 tapers only in a narrow band
+   * at the outline, 1 is a full circular profile. Set from the shape prior,
+   * because it is the one thing about closure a class label really does say.
+   */
+  roundness: number;
+  /**
+   * How far the measured relief may move the front surface, in units of the
+   * model's half-depth. The whole point of the exercise, so it is not small.
+   */
+  reliefGain: number;
+  /** Smoothing radius as a fraction of the image's short side. */
+  smoothing: number;
+}
+
+export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
+  roundness: 0.6,
+  reliefGain: 0.45,
+  smoothing: 0.012,
+};
+
+/** Value below which `p` of the samples fall; `values` is sorted in place. */
+function percentile(values: Float32Array, count: number, p: number): number {
+  if (count === 0) return 0;
+  const slice = values.subarray(0, count);
+  slice.sort();
+  return slice[Math.min(count - 1, Math.max(0, Math.round(p * (count - 1))))];
+}
+
+/**
+ * Half-thickness profile that closes the volume at the silhouette.
+ *
+ * At the outline of a smooth solid the surface is tangent to the line of sight,
+ * so the thickness there really is zero — that part is geometry, not a guess.
+ * How fast it thickens inland is the guess, and it is the difference between a
+ * ball and a slab: `roundness` 1 gives a circular cross-section, 0 gives a plate
+ * with a rounded edge and full thickness everywhere else.
+ */
+function closureProfile(
+  mask: Mask,
+  width: number,
+  height: number,
+  roundness: number,
+): Float32Array {
+  const dist = distanceTransform(mask, width, height);
+  let maxDist = 0;
+  for (let i = 0; i < dist.length; i++) if (dist[i] > maxDist) maxDist = dist[i];
+  const profile = new Float32Array(dist.length);
+  if (maxDist <= 0) return profile;
+  const band = Math.max(1, maxDist * (0.22 + 0.78 * Math.max(0, Math.min(1, roundness))));
+  for (let i = 0; i < dist.length; i++) {
+    if (!mask[i]) continue;
+    const t = Math.min(1, dist[i] / band);
+    profile[i] = Math.sqrt(Math.max(0, 1 - (1 - t) * (1 - t)));
+  }
+  return profile;
+}
+
+/**
+ * How much the depth prior should be trimmed, given how flat the depth map says
+ * the object is.
+ *
+ * Relative depth cannot be turned into a real depth without knowing the camera,
+ * so this is not a measurement of the object's thickness and does not pretend to
+ * be. What it can see is a ratio: the object's own disparity spread against how
+ * far the object stands out from its background. A ball uses up much of that
+ * gap, a poster on a wall almost none — and "this is flat" is exactly the case
+ * a proportions-and-class-label prior gets most wrong.
+ *
+ * It is clamped hard and only ever trims, because the two ways it goes wrong
+ * both inflate: a studio backdrop the network reads as *near* rather than far
+ * collapses the denominator, and an object that fills the frame leaves no
+ * background to compare against at all. Returns null when there is no usable
+ * background, which is the honest answer rather than a confident 1.
+ */
+function reliefScaleFrom(
+  relief: Float32Array,
+  mask: Mask,
+  objectSpread: number,
+): number | null {
+  const n = mask.length;
+  let outside = 0;
+  const scratch = new Float32Array(n);
+  for (let i = 0; i < n; i++) if (!mask[i]) scratch[outside++] = relief[i];
+  // Less than a fifth of the frame outside the object is not a background, it
+  // is a crop, and its statistics say nothing about how far away anything is.
+  if (outside < n * 0.2) return null;
+
+  const backgroundFar = percentile(scratch, outside, 0.25);
+  let objectNear = -Infinity;
+  let objectCount = 0;
+  for (let i = 0; i < n; i++) {
+    if (!mask[i]) continue;
+    objectCount++;
+    if (relief[i] > objectNear) objectNear = relief[i];
+  }
+  if (objectCount === 0) return null;
+
+  const contrast = objectNear - backgroundFar;
+  // The object has to actually stand in front of its background for the ratio
+  // to mean anything. On a white sweep it often does not.
+  if (!(contrast > 0) || objectSpread <= 0 || objectSpread > contrast) return null;
+
+  // Typical framing puts a compact object around a third of the way through
+  // its own standout, so that is the point where the prior is left alone.
+  const fraction = objectSpread / contrast;
+  return Math.max(0.7, Math.min(1, 0.55 + 1.35 * fraction));
+}
+
+/**
+ * Turn a measured relative depth map into a front/back thickness field.
+ *
+ * `relief` is inverse relative depth on the photo's own pixel grid — larger is
+ * nearer, scale and shift arbitrary. Only its shape within the mask is used;
+ * nothing here treats it as a distance.
+ *
+ * The construction is deliberately lopsided:
+ *
+ *   back  = the closure profile alone. The photograph says nothing about the
+ *           far side beyond the outline, so it stays smooth.
+ *   front = the same profile, pushed forward or back by the measured relief.
+ *
+ * That asymmetry is what makes a car read as a car: the wheels, which the depth
+ * map puts nearest, push out in front of the doors, and the greenhouse, which it
+ * puts furthest, is set back and comes out thinner. Both effects survive the
+ * trip through the voxeliser because they change the column's *placement* along
+ * z as well as its thickness.
+ */
+export function depthFieldFromRelief(
+  relief: Float32Array,
+  mask: Mask,
+  width: number,
+  height: number,
+  optionsIn: Partial<ReliefOptions> = {},
+): DepthField {
+  const options = { ...DEFAULT_RELIEF_OPTIONS, ...optionsIn };
+  const n = width * height;
+  const front = new Float32Array(n);
+  const back = new Float32Array(n);
+
+  // Statistics come from an eroded mask. The prediction is produced on a 37x37
+  // patch grid and upsampled, so the last couple of pixels inside the outline
+  // carry the background's depth, not the object's — and since those are the
+  // extremes of the range, they are exactly what a percentile would latch onto.
+  const inner = erode(mask, width, height, Math.max(1, Math.round(Math.min(width, height) * 0.01)));
+  const scratch = new Float32Array(n);
+  let count = 0;
+  for (let i = 0; i < n; i++) if (inner[i]) scratch[count++] = relief[i];
+  if (count < 16) {
+    count = 0;
+    for (let i = 0; i < n; i++) if (mask[i]) scratch[count++] = relief[i];
+  }
+  if (count === 0) return { front, back, reliefScale: null };
+
+  const lo = percentile(scratch, count, 0.02);
+  const hi = percentile(scratch, count, 0.98);
+  const span = hi - lo;
+  const reliefScale = reliefScaleFrom(relief, mask, span);
+
+  // Normalised elevation toward the camera, 0..1 over the object.
+  const elevation = new Float32Array(n);
+  if (span > 1e-9) {
+    for (let i = 0; i < n; i++) {
+      if (!mask[i]) continue;
+      elevation[i] = Math.max(0, Math.min(1, (relief[i] - lo) / span));
+    }
+  } else {
+    for (let i = 0; i < n; i++) if (mask[i]) elevation[i] = 0.5;
+  }
+  const radius = Math.max(1, Math.round(Math.min(width, height) * options.smoothing));
+  const smoothElevation = boxBlur(elevation, width, height, radius, 2);
+
+  const profile = closureProfile(mask, width, height, options.roundness);
+
+  // The relief redistributes depth rather than adding it, so it is measured
+  // against the object's own middle — weighted by the profile so the tapering
+  // rim, where the prediction is least trustworthy, does not set the datum.
+  let weighted = 0;
+  let weight = 0;
+  for (let i = 0; i < n; i++) {
+    if (!mask[i]) continue;
+    weighted += smoothElevation[i] * profile[i];
+    weight += profile[i];
+  }
+  const datum = weight > 0 ? weighted / weight : 0.5;
+
+  // Relief has to fade at the very outline or the silhouette stops closing and
+  // the model grows a hard rim. Everywhere else it acts at full strength — in
+  // particular over a car's wheels, which sit near the bottom edge and are the
+  // whole reason for doing this.
+  const dist = distanceTransform(mask, width, height);
+  let maxDist = 0;
+  for (let i = 0; i < n; i++) if (dist[i] > maxDist) maxDist = dist[i];
+  const rim = Math.max(1, maxDist * 0.15);
+
+  let max = 0;
+  for (let i = 0; i < n; i++) {
+    if (!mask[i]) continue;
+    const half = 0.5 * profile[i];
+    back[i] = half;
+    const taper = Math.min(1, dist[i] / rim);
+    const push = options.reliefGain * (smoothElevation[i] - datum) * taper;
+    // Never let the front fall behind the centre plane: a dark or distant patch
+    // may set the surface back, but it may not punch a hole through the solid.
+    front[i] = Math.max(0.15 * half, half + push);
+    const total = front[i] + back[i];
+    if (total > max) max = total;
+  }
+  if (max > 0) {
+    for (let i = 0; i < n; i++) {
+      front[i] /= max;
+      back[i] /= max;
+    }
+  }
+  return { front, back, reliefScale };
+}
+
+/**
+ * The fallback shape, for when the depth weights are unreachable.
+ *
+ * A bulge from the distance transform plus a shading cue from luminance. Both
+ * are guesses and the first one dominates, so the answer is always the
+ * silhouette inflated — see the note at the top of this file. Prefer
+ * `depthFieldFromRelief` whenever there is a measured depth map to hand.
+ */
 export function estimateDepth(
   rgba: Uint8ClampedArray,
   mask: Mask,
@@ -125,7 +363,8 @@ export function estimateDepth(
       back[i] /= max;
     }
   }
-  return { front, back };
+  // Nothing was measured, so there is nothing to correct the prior with.
+  return { front, back, reliefScale: null };
 }
 
 /**

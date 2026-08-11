@@ -22,6 +22,12 @@ import {
   samReady,
   type Embedding,
 } from '../core/image/sam';
+import {
+  loadMonoDepth,
+  monoDepthReady,
+  MONODEPTH_BYTES,
+  predictDepth,
+} from '../core/image/monodepth';
 import { loadRecogniser, recognise, recogniserReady } from '../core/recognise/recognise';
 import { shapePriorFor } from '../core/recognise/shapePrior';
 import type { Rect, SegmentEngine, WorkerRequest, WorkerResponse } from '../types';
@@ -43,6 +49,71 @@ function cacheEmbedding(viewId: number, embedding: Embedding): void {
     const oldest = embeddings.keys().next().value;
     if (oldest === undefined) break;
     embeddings.delete(oldest);
+  }
+}
+
+/**
+ * Measured depth maps, keyed by the pixels they came from.
+ *
+ * Depth costs seconds in WASM and depends only on the photograph — not on the
+ * mask, not on any slider — so re-running it every time someone nudges the width
+ * would make the settings unusable. The key is a hash of the pixels rather than
+ * a view id because the build message carries only pixels; that keeps the whole
+ * mechanism inside the worker instead of threading an identifier through the
+ * page for the sake of a cache.
+ */
+const depthMaps = new Map<number, Float32Array>();
+const DEPTH_LIMIT = 8;
+
+/** FNV-1a over a stride through the image, plus its shape. */
+function pixelKey(rgba: Uint8ClampedArray, width: number, height: number): number {
+  let h = 0x811c9dc5 ^ width ^ (height << 16);
+  const stride = 4 * Math.max(1, Math.floor(rgba.length / 4 / 8192));
+  for (let i = 0; i < rgba.length; i += stride) {
+    h ^= rgba[i];
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Whatever the depth model is doing, as one promise.
+ *
+ * A build must not race the download: starting before the weights land would
+ * silently produce the inflated-silhouette fallback and look like a finished
+ * answer. So the build waits, and if the load failed it carries on without it.
+ */
+let depthLoad: Promise<void> | null = null;
+
+async function reliefFor(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Promise<Float32Array | undefined> {
+  if (!depthLoad) return undefined;
+  try {
+    await depthLoad;
+  } catch {
+    return undefined;
+  }
+  if (!monoDepthReady()) return undefined;
+
+  const key = pixelKey(rgba, width, height);
+  const cached = depthMaps.get(key);
+  if (cached) return cached;
+  try {
+    const relief = await predictDepth(rgba, width, height);
+    depthMaps.set(key, relief);
+    while (depthMaps.size > DEPTH_LIMIT) {
+      const oldest = depthMaps.keys().next().value;
+      if (oldest === undefined) break;
+      depthMaps.delete(oldest);
+    }
+    return relief;
+  } catch {
+    // A model that loaded but failed on this image is not worth losing the
+    // build over; the bulge still produces something.
+    return undefined;
   }
 }
 
@@ -138,6 +209,35 @@ async function handleSegment(request: Extract<WorkerRequest, { kind: 'segment' }
   }
 }
 
+/**
+ * Build, with the depth map attached to the photo the user framed.
+ *
+ * Only the first view gets one. With two or more photographs the shape is
+ * carved from the silhouettes, which is measured geometry that a relative depth
+ * map cannot improve on, so paying seconds per extra photo would buy nothing.
+ */
+async function handleBuild(request: Extract<WorkerRequest, { kind: 'build' }>): Promise<void> {
+  const { id, views, options } = request;
+  try {
+    let relief: Float32Array | undefined;
+    if (views.length === 1 && depthLoad) {
+      post({ id, type: 'progress', stage: 'Measuring depth', fraction: 0.02 });
+      relief = await reliefFor(views[0].rgba, views[0].width, views[0].height);
+    }
+    const withDepth = views.map((v, i) => (i === 0 && relief ? { ...v, relief } : v));
+    const result = generateModel(withDepth, options, (stage, fraction) => {
+      post({ id, type: 'progress', stage, fraction });
+    });
+    post({ id, type: 'done', result });
+  } catch (error) {
+    post({
+      id,
+      type: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
 
@@ -145,7 +245,31 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
     // The classifier is small and independent; a failure to load it must not
     // stop the segmentation model from arriving.
     void loadRecogniser({ classifier: request.urls.classifier }).catch(() => {});
-    loadSam(request.urls, (loaded, total) => post({ type: 'model-progress', loaded, total }))
+
+    // Two independent downloads, one progress bar. Reporting them separately
+    // would make the depth weights — the larger half of the wait — look like a
+    // second, unexplained stall after the segmenter said it was ready.
+    const samBytes = 14_132_462 + 4_735_539;
+    const total = samBytes + MONODEPTH_BYTES;
+    let samLoaded = 0;
+    let depthLoaded = 0;
+    const report = () => post({ type: 'model-progress', loaded: samLoaded + depthLoaded, total });
+
+    depthLoad = loadMonoDepth(
+      { runtime: request.urls.runtime, depth: request.urls.depth },
+      (loaded) => {
+        depthLoaded = loaded;
+        report();
+      },
+    );
+    // Nothing awaits this here; the build path does, and an unhandled rejection
+    // in a worker takes the whole worker down.
+    depthLoad.catch(() => {});
+
+    loadSam(request.urls, (loaded) => {
+      samLoaded = loaded;
+      report();
+    })
       .then(() => post({ type: 'model-ready' }))
       .catch((error) =>
         post({
@@ -161,17 +285,5 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
     return;
   }
 
-  const { id, views, options } = request;
-  try {
-    const result = generateModel(views, options, (stage, fraction) => {
-      post({ id, type: 'progress', stage, fraction });
-    });
-    post({ id, type: 'done', result });
-  } catch (error) {
-    post({
-      id,
-      type: 'error',
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
+  void handleBuild(request);
 });
