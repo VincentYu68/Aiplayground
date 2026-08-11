@@ -180,25 +180,35 @@ async function handleSegment(request: Extract<WorkerRequest, { kind: 'segment' }
     } else {
       outcome = segmentWithGrabCut(request);
     }
-    post({ type: 'segmented', viewId, seq, mask: outcome.mask, engine, box: outcome.box });
-
     // Recognising the object needs the cut-out — an ImageNet model handed a
-    // whole desk shot answers "desk" — so it runs after, not in parallel.
+    // whole desk shot answers "desk" — so it runs after the segmenter, not in
+    // parallel.
+    //
+    // It is also *posted* first, which matters more than it looks. The page
+    // starts a build the moment a new cut-out lands, so sending the outline
+    // first builds with whatever shape settings were already there and leaves
+    // the prior to apply to the next build — one the user has to ask for. That
+    // is what made a photographed mug come out as an extruded slab: revolve mode
+    // was chosen correctly, a few hundred milliseconds after the model that
+    // needed it had already been built.
+    let recognised: Extract<WorkerResponse, { type: 'recognised' }> | null = null;
     if (recogniserReady()) {
       try {
         const what = await recognise(request.rgba, request.width, request.height, outcome.mask);
-        post({
+        recognised = {
           type: 'recognised',
           viewId,
           seq,
           label: what.label,
           confidence: what.labelConfidence,
           prior: shapePriorFor(what),
-        });
+        };
       } catch {
         // A failed guess is not worth surfacing; the defaults still apply.
       }
     }
+    if (recognised) post(recognised);
+    post({ type: 'segmented', viewId, seq, mask: outcome.mask, engine, box: outcome.box });
   } catch (error) {
     post({
       type: 'segment-error',

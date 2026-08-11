@@ -4,7 +4,7 @@
  * Node's zlib does the compression; the rest is chunk framing and CRC.
  */
 
-import { deflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 const CRC_TABLE = (() => {
   const table = new Int32Array(256);
@@ -72,6 +72,130 @@ export function encodePng(rgba: Uint8ClampedArray, width: number, height: number
     o += p.length;
   }
   return out;
+}
+
+/**
+ * Read a PNG back in.
+ *
+ * The renderer that produces the photographic corpus is a browser, so the
+ * pictures arrive as PNG and node has to be able to open them to score
+ * anything. Only what Chromium's `toDataURL` emits is supported: 8-bit
+ * truecolour with or without alpha, no interlacing, no palette. Anything else
+ * throws rather than returning quietly wrong pixels.
+ */
+export function decodePng(buffer: Uint8Array): {
+  rgba: Uint8ClampedArray;
+  width: number;
+  height: number;
+} {
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  for (let i = 0; i < 8; i++) {
+    if (buffer[i] !== [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a][i]) {
+      throw new Error('not a PNG');
+    }
+  }
+
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let channels = 0;
+  const idat: Uint8Array[] = [];
+  while (offset < buffer.length) {
+    const length = view.getUint32(offset);
+    const type = String.fromCharCode(
+      buffer[offset + 4],
+      buffer[offset + 5],
+      buffer[offset + 6],
+      buffer[offset + 7],
+    );
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = view.getUint32(offset + 8);
+      height = view.getUint32(offset + 12);
+      const depth = buffer[offset + 16];
+      const colourType = buffer[offset + 17];
+      const interlace = buffer[offset + 20];
+      if (depth !== 8) throw new Error(`unsupported PNG bit depth ${depth}`);
+      if (interlace !== 0) throw new Error('interlaced PNG');
+      if (colourType === 2) channels = 3;
+      else if (colourType === 6) channels = 4;
+      else if (colourType === 0) channels = 1;
+      else throw new Error(`unsupported PNG colour type ${colourType}`);
+    } else if (type === 'IDAT') {
+      idat.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset += 12 + length;
+  }
+
+  const compressed = new Uint8Array(idat.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of idat) {
+    compressed.set(c, at);
+    at += c.length;
+  }
+  const raw = new Uint8Array(inflateSync(compressed));
+
+  const stride = width * channels;
+  const out = new Uint8ClampedArray(width * height * 4);
+  const line = new Uint8Array(stride);
+  const previous = new Uint8Array(stride);
+  let src = 0;
+  for (let y = 0; y < height; y++) {
+    const filter = raw[src++];
+    for (let i = 0; i < stride; i++) {
+      const x = raw[src + i];
+      const a = i >= channels ? line[i - channels] : 0;
+      const b = previous[i];
+      const c = i >= channels ? previous[i - channels] : 0;
+      let value: number;
+      switch (filter) {
+        case 0:
+          value = x;
+          break;
+        case 1:
+          value = x + a;
+          break;
+        case 2:
+          value = x + b;
+          break;
+        case 3:
+          value = x + ((a + b) >> 1);
+          break;
+        case 4: {
+          // Paeth: pick whichever neighbour the gradient predicts best.
+          const p = a + b - c;
+          const pa = Math.abs(p - a);
+          const pb = Math.abs(p - b);
+          const pc = Math.abs(p - c);
+          value = x + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c);
+          break;
+        }
+        default:
+          throw new Error(`unknown PNG filter ${filter}`);
+      }
+      line[i] = value & 0xff;
+    }
+    src += stride;
+    for (let x = 0; x < width; x++) {
+      const d = (y * width + x) * 4;
+      const s = x * channels;
+      if (channels === 1) {
+        out[d] = line[s];
+        out[d + 1] = line[s];
+        out[d + 2] = line[s];
+        out[d + 3] = 255;
+      } else {
+        out[d] = line[s];
+        out[d + 1] = line[s + 1];
+        out[d + 2] = line[s + 2];
+        out[d + 3] = channels === 4 ? line[s + 3] : 255;
+      }
+    }
+    previous.set(line);
+  }
+  return { rgba: out, width, height };
 }
 
 /** Encode a 0/1 mask as a black-and-white PNG. */

@@ -302,7 +302,7 @@ export function insideParts(parts: Part[], x: number, y: number, z: number): boo
  * in the polygon rather than with a bevel modifier keeps the mesh and the
  * inside-test the same shape, which a bevel would not.
  */
-export function roundPolygon(poly: Vec2[], radius: number, segments = 5): Vec2[] {
+export function roundPolygon(poly: Vec2[], radius: number, segments = 8): Vec2[] {
   const out: Vec2[] = [];
   const n = poly.length;
   for (let i = 0; i < n; i++) {

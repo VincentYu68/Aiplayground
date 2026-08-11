@@ -5,8 +5,8 @@
  * it runnable in a worker, testable in node, and reproducible for a given seed.
  */
 
-import { depthFieldFromRelief, estimateDepth } from '../image/depth';
-import { snapToCourses, voxelize } from '../voxel/voxelize';
+import { depthFieldFromRelief, estimateDepth, measureRelief } from '../image/depth';
+import { planGrid, snapToCourses, voxelize, type GridPlanOptions } from '../voxel/voxelize';
 import { voxelizeFromHull } from '../voxel/fromHull';
 import { carveVisualHull, type View } from '../multiview/visualHull';
 import { groundComponents, hollow, removeSmallComponents, shouldHollow } from '../voxel/cleanup';
@@ -65,6 +65,16 @@ function fitToBuildableHeight(
   };
 }
 
+/** The subset of the build options that decides the lattice. */
+function planOptionsFrom(options: BuildOptions): GridPlanOptions {
+  return {
+    studsWide: options.studsWide,
+    depthScale: options.depthScale,
+    solidMode: options.solidMode,
+    wholeCourses: options.resolution === 'bricks',
+  };
+}
+
 /**
  * Build from one or more views.
  *
@@ -117,13 +127,34 @@ export function generateModel(
     // consulted in the fallback, where it is the sole source of relief; against
     // a real depth map it adds nothing but luminance noise.
     onProgress(primary.relief ? 'Reading the depth map' : 'Estimating depth', 0.05);
-    const depth = primary.relief
-      ? depthFieldFromRelief(primary.relief, primary.mask, primary.width, primary.height, {
-          roundness: options.roundness,
-        })
-      : estimateDepth(primary.rgba, primary.mask, primary.width, primary.height, {
-          shadingInfluence: options.shadingInfluence,
-        });
+    let depth;
+    if (primary.relief) {
+      const measured = measureRelief(
+        primary.relief,
+        primary.mask,
+        primary.width,
+        primary.height,
+      );
+      // How deep the model will be has to be settled before the volume can be
+      // closed, because the surface rolls over the silhouette edge across a
+      // distance equal to the object's half-depth — not across some fraction of
+      // how big the silhouette happens to be.
+      const plan = planGrid(
+        primary.mask,
+        primary.width,
+        primary.height,
+        planOptionsFrom(options),
+        measured.reliefScale,
+      );
+      depth = depthFieldFromRelief(measured, primary.mask, primary.width, primary.height, {
+        roundness: options.roundness,
+        halfDepthPx: plan ? (plan.gridZ / 2) * plan.pxPerStud : 1,
+      });
+    } else {
+      depth = estimateDepth(primary.rgba, primary.mask, primary.width, primary.height, {
+        shadingInfluence: options.shadingInfluence,
+      });
+    }
 
     onProgress('Sampling onto the stud grid', 0.2);
     voxelResult = voxelize(primary.rgba, primary.mask, primary.width, primary.height, depth, {

@@ -127,12 +127,37 @@ interface ColumnSample {
 }
 
 /**
- * How many studs deep the model should be.
+ * The lattice the object will be sampled onto, decided once.
  *
- * This used to be `studsWide * depthScale`, i.e. the model was as deep as the
- * photograph was *wide*. That is fine for anything roughly square and absurd for
- * anything else: a car photographed side-on has "wide" equal to its length, so
- * it was extruded into a cube, and the finished model was a featureless loaf
+ * The depth extent is needed in two places — here, to size the grid, and in
+ * `depthFieldFromRelief`, which has to know how far the surface rolls over the
+ * silhouette edge to close the volume. It used to be worked out separately in
+ * each, with two different meanings, and the resulting mismatch is what turned
+ * every plan view into a circle. One function, one answer, both callers.
+ */
+export interface GridPlan {
+  box: NonNullable<ReturnType<typeof bounds>>;
+  gridX: number;
+  gridY: number;
+  gridZ: number;
+  pxPerStud: number;
+  pxPerPlate: number;
+}
+
+export interface GridPlanOptions {
+  studsWide: number;
+  depthScale: number;
+  solidMode: SolidMode;
+  wholeCourses: boolean;
+}
+
+/**
+ * How many studs deep the model should be, among other things.
+ *
+ * The depth used to be `studsWide * depthScale`, i.e. the model was as deep as
+ * the photograph was *wide*. That is fine for anything roughly square and absurd
+ * for anything else: a car photographed side-on has "wide" equal to its length,
+ * so it was extruded into a cube, and the finished model was a featureless loaf
  * whose front view happened to look like a car.
  *
  * The short axis is a far better anchor, and not by accident. Nothing much is
@@ -146,16 +171,36 @@ interface ColumnSample {
  * `reliefScale` is the one part of this that is measured rather than assumed,
  * and it only ever trims. See `reliefScaleFrom`.
  */
-function depthExtent(
-  gridX: number,
-  gridY: number,
-  depthScale: number,
+export function planGrid(
+  mask: Mask,
+  width: number,
+  height: number,
+  options: GridPlanOptions,
   reliefScale: number | null,
-): number {
+): GridPlan | null {
+  const box = bounds(mask, width, height);
+  if (!box) return null;
+
+  const gridX = Math.max(1, Math.round(options.studsWide));
+  let gridY = platesForAspect(gridX, box.width, box.height);
+  if (options.wholeCourses) gridY = Math.max(3, Math.ceil(gridY / 3) * 3);
+
   // Y counts plates and X counts studs, and a plate is not a stud tall.
   const shortAxis = Math.min(gridX, gridY / PLATES_PER_STUD);
-  const ratio = Math.max(0.05, depthScale) * (reliefScale ?? 1);
-  return Math.max(2, Math.round(shortAxis * ratio));
+  const ratio = Math.max(0.05, options.depthScale) * (reliefScale ?? 1);
+  // A body of revolution takes its depth from its own radius: the silhouette
+  // width *is* the diameter, and no prior gets a say.
+  const gridZ =
+    options.solidMode === 'revolve' ? gridX : Math.max(2, Math.round(shortAxis * ratio));
+
+  return {
+    box,
+    gridX,
+    gridY,
+    gridZ,
+    pxPerStud: box.width / gridX,
+    pxPerPlate: box.height / gridY,
+  };
 }
 
 /** Average the source pixels under one grid column. */
@@ -237,8 +282,11 @@ export function voxelize(
   depth: DepthField,
   options: VoxelizeOptions,
 ): VoxelizeResult {
-  const box = bounds(mask, width, height);
-  if (!box) {
+  // The same plan the depth field was closed against — same function, same
+  // inputs, same answer. Passing it in would be tidier, but it would also make
+  // it possible for a caller to hand over a plan that disagrees.
+  const plan = planGrid(mask, width, height, options, depth.reliefScale);
+  if (!plan) {
     return {
       grid: new VoxelGrid(1, 1, 1),
       palette: [PALETTE[0]],
@@ -248,18 +296,7 @@ export function voxelize(
       meanDeltaE: 0,
     };
   }
-
-  const gridX = Math.max(1, Math.round(options.studsWide));
-  let gridY = platesForAspect(gridX, box.width, box.height);
-  if (options.wholeCourses) gridY = Math.max(3, Math.ceil(gridY / 3) * 3);
-
-  const gridZ =
-    options.solidMode === 'revolve'
-      ? gridX
-      : depthExtent(gridX, gridY, options.depthScale, depth.reliefScale);
-
-  const pxPerStud = box.width / gridX;
-  const pxPerPlate = box.height / gridY;
+  const { box, gridX, gridY, gridZ, pxPerStud, pxPerPlate } = plan;
 
   // Which silhouette pixel each interior pixel wraps round to, for the far side.
   const edgeSource = nearestEdgePixel(mask, width, height);
