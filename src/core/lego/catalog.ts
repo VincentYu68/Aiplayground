@@ -1,17 +1,97 @@
 /**
- * The set of standard LEGO elements the generator is allowed to use.
+ * The set of standard LEGO elements the generator is allowed to use, and which
+ * colours each of them actually exists in.
  *
- * Deliberately conservative: every footprint here is an ordinary System brick
- * or plate that has been in continuous production for decades and is available
- * from Bricklink / Pick-a-Brick in most solid colours. No slopes, tiles,
- * brackets, SNOT parts or specialty elements — that keeps the build honest
- * (a real person can actually source the parts) and keeps the geometry a
- * clean axis-aligned voxel problem.
+ * This file used to open by claiming that every footprint here was "available
+ * from Bricklink / Pick-a-Brick in most solid colours". That was false, and the
+ * generator leaned hardest on exactly the combinations where it was most false:
+ * real generated output asked for `Brick 1 x 16 in Very Light Bluish Gray x3`
+ * and `Brick 1 x 10 in Rust x1`. Availability is a property of the (element,
+ * colour) pair, not a footnote, so it is modelled here — see `supply` below and
+ * the supply note at the top of `colors.ts`.
+ *
+ * ## The part contract
+ *
+ * A `PartDef` is meant to be enough, on its own, for a renderer or an exporter
+ * to draw or name the element without special cases:
+ *
+ *   shape    'brick' | 'plate' | 'tile' | 'slope'
+ *   a, b     footprint in studs, a <= b
+ *   height   height in plate units — 1 for a plate or tile, 3 for a brick or slope
+ *   studs    how many studs are moulded on the top face (0 for a tile)
+ *   slope    present only on slopes: how far the ramp runs and how far it drops
+ *
+ * A placement additionally carries `facing`, because a 2x1 slope pointing east
+ * and one pointing west are the same element in two orientations. See
+ * `SlopeFacing` and `SLOPE_ROTATION_DEG`.
  */
 
 import { PLATES_PER_BRICK } from './units';
+import { supplySupports, type ColorSupply, type LegoColor } from './colors';
 
 export type PartHeight = 1 | 3;
+
+/**
+ * What the element is, geometrically.
+ *
+ * 'brick' and 'plate' are boxes with studs on top and differ only in height.
+ * 'tile' is a box with no studs, used to finish a surface that nothing else
+ * will be built on. 'slope' is a box with one top corner cut away along a
+ * horizontal axis — see `SlopeGeometry`.
+ */
+export type PartShape = 'brick' | 'plate' | 'tile' | 'slope';
+
+/**
+ * Which way a sloped face descends, in grid axes.
+ *
+ * '+x' means the ramp's high end is at the part's low-x edge and it falls away
+ * towards increasing x. The catalogue models every slope in the '+x'
+ * orientation; the other three are that geometry rotated about +Y.
+ */
+export type SlopeFacing = '+x' | '-x' | '+z' | '-z';
+
+/** Rotation about +Y, in degrees, that turns the canonical '+x' part into each facing. */
+export const SLOPE_ROTATION_DEG: Record<SlopeFacing, number> = {
+  '+x': 0,
+  '+z': 90,
+  '-x': 180,
+  '-z': 270,
+};
+
+/**
+ * The wedge cut out of a slope, in grid units.
+ *
+ * A placement gives a box spanning `w` studs along X, `height` plates
+ * vertically and `d` studs along Z, plus a `facing`. The ramp always runs along
+ * the facing axis, over the `run` studs at the facing end, and the element's
+ * long side (`b`) is always the one on that axis — so for '+x' or '-x' the
+ * placed `w` is `b`, and for '+z' or '-z' the placed `d` is `b`.
+ *
+ * Taking '+x' as the example, with the box's own corner at the origin:
+ *
+ *   - The part is full height over the first `w - run` studs of X.
+ *   - Over the last `run` studs the top surface falls linearly from `height`
+ *     plates down to `height - rise`. For every slope in this catalogue
+ *     `rise === height`, so the ramp reaches the bottom face.
+ *   - Studs sit on the flat part only, `(w - run) x d` of them, which is what
+ *     `PartDef.studs` counts.
+ *   - `inverted` mirrors that vertically: the top stays flat and fully studded
+ *     and it is the *underside* that rises from 0 to `rise` over the same run.
+ *     That is what you put under an overhang.
+ *
+ * '-x' is the same wedge with the high end at the high-x edge, and the two z
+ * facings are the whole thing turned about +Y — see `SLOPE_ROTATION_DEG`.
+ *
+ * `angle` is the number LEGO puts in the part's name and is not derived from
+ * run and rise — a stud is 8mm and a brick is 9.6mm, so the "45 degree" slope is
+ * really about 50, and it is the name people search Bricklink for.
+ */
+export interface SlopeGeometry {
+  angle: number;
+  run: number;
+  rise: number;
+  inverted: boolean;
+}
 
 export interface PartDef {
   /** Stable id, e.g. "brick-2x4". */
@@ -22,87 +102,215 @@ export interface PartDef {
   /** Footprint in studs, always stored with a <= b. */
   a: number;
   b: number;
-  /** Height in plate units: 1 for a plate, 3 for a brick. */
+  /** Height in plate units: 1 for a plate or tile, 3 for a brick or slope. */
   height: PartHeight;
+  shape: PartShape;
+  /**
+   * Studs moulded on the top face. A tile has none; a slope has them only on
+   * the flat part it did not cut away.
+   */
+  studs: number;
+  /**
+   * The narrowest colour supply tier this element is moulded in. A colour may
+   * be used in this element only when `supplySupports(colour.supply, part.supply)`.
+   */
+  supply: ColorSupply;
+  /** Present on slopes only. */
+  slope?: SlopeGeometry;
 }
 
-const BRICK_FOOTPRINTS: Array<[number, number, string]> = [
-  [1, 1, '3005'],
-  [1, 2, '3004'],
-  [1, 3, '3622'],
-  [1, 4, '3010'],
-  [1, 6, '3009'],
-  [1, 8, '3008'],
-  [1, 10, '6111'],
-  [1, 12, '6112'],
-  [1, 16, '2465'],
-  [2, 2, '3003'],
-  [2, 3, '3002'],
-  [2, 4, '3001'],
-  [2, 6, '2456'],
-  [2, 8, '3007'],
-  [2, 10, '3006'],
+/**
+ * Footprints, element numbers and how widely each is made.
+ *
+ * The size at which an element stops being available in anything but the
+ * workhorse colours is a real boundary, not a guess about pricing: the long
+ * 1x10 / 1x12 / 1x16 bricks and the big plates are low-volume mouldings that
+ * only ever ran in the structural colours.
+ */
+const BRICK_FOOTPRINTS: Array<[number, number, string, ColorSupply]> = [
+  [1, 1, '3005', 'limited'],
+  [1, 2, '3004', 'limited'],
+  [1, 3, '3622', 'limited'],
+  [1, 4, '3010', 'limited'],
+  [1, 6, '3009', 'common'],
+  [1, 8, '3008', 'common'],
+  [1, 10, '6111', 'core'],
+  [1, 12, '6112', 'core'],
+  [1, 16, '2465', 'core'],
+  [2, 2, '3003', 'limited'],
+  [2, 3, '3002', 'limited'],
+  [2, 4, '3001', 'limited'],
+  [2, 6, '2456', 'common'],
+  [2, 8, '3007', 'common'],
+  [2, 10, '3006', 'core'],
 ];
 
-const PLATE_FOOTPRINTS: Array<[number, number, string]> = [
-  [1, 1, '3024'],
-  [1, 2, '3023'],
-  [1, 3, '3623'],
-  [1, 4, '3710'],
-  [1, 6, '3666'],
-  [1, 8, '3460'],
-  [1, 10, '4477'],
-  [1, 12, '60479'],
-  [2, 2, '3022'],
-  [2, 3, '3021'],
-  [2, 4, '3020'],
-  [2, 6, '3795'],
-  [2, 8, '3034'],
-  [2, 10, '3832'],
-  [2, 12, '2445'],
-  [2, 16, '4282'],
-  [4, 4, '3031'],
-  [4, 6, '3032'],
-  [4, 8, '3035'],
-  [4, 10, '3030'],
-  [4, 12, '3029'],
-  [6, 6, '3958'],
-  [6, 8, '3036'],
-  [6, 10, '3033'],
-  [6, 12, '3028'],
-  [6, 16, '3027'],
-  [8, 8, '41539'],
-  [8, 16, '4204'],
+const PLATE_FOOTPRINTS: Array<[number, number, string, ColorSupply]> = [
+  [1, 1, '3024', 'limited'],
+  [1, 2, '3023', 'limited'],
+  [1, 3, '3623', 'limited'],
+  [1, 4, '3710', 'limited'],
+  [1, 6, '3666', 'limited'],
+  [1, 8, '3460', 'common'],
+  [1, 10, '4477', 'core'],
+  [1, 12, '60479', 'core'],
+  [2, 2, '3022', 'limited'],
+  [2, 3, '3021', 'limited'],
+  [2, 4, '3020', 'limited'],
+  [2, 6, '3795', 'common'],
+  [2, 8, '3034', 'common'],
+  [2, 10, '3832', 'core'],
+  [2, 12, '2445', 'core'],
+  [2, 16, '4282', 'core'],
+  [4, 4, '3031', 'common'],
+  [4, 6, '3032', 'common'],
+  [4, 8, '3035', 'common'],
+  [4, 10, '3030', 'core'],
+  [4, 12, '3029', 'core'],
+  [6, 6, '3958', 'common'],
+  [6, 8, '3036', 'common'],
+  [6, 10, '3033', 'core'],
+  [6, 12, '3028', 'core'],
+  [6, 16, '3027', 'core'],
+  [8, 8, '41539', 'core'],
+  [8, 16, '4204', 'core'],
 ];
 
-function build(list: Array<[number, number, string]>, height: PartHeight, label: string): PartDef[] {
-  return list.map(([a, b, code]) => ({
-    id: `${label}-${a}x${b}`,
+/**
+ * Tiles: a plate with no studs.
+ *
+ * These are what makes a finished surface read as a designed model rather than
+ * as the top of a voxel stack, and the catalogue used to exclude them on the
+ * grounds that they kept "the geometry a clean axis-aligned voxel problem".
+ * They do not disturb the voxel problem at all — a tile occupies exactly the
+ * same cell a plate would — they simply say "nothing is built on this".
+ *
+ * The 1x1, 1x2 and 2x2 tiles carry a letter in their element number because
+ * both a grooved and an ungrooved mould exist. The grooved one is the part in
+ * production and the one both LDraw and Bricklink mean by that number.
+ */
+const TILE_FOOTPRINTS: Array<[number, number, string, ColorSupply]> = [
+  [1, 1, '3070b', 'limited'],
+  [1, 2, '3069b', 'limited'],
+  [1, 3, '63864', 'limited'],
+  [1, 4, '2431', 'limited'],
+  [1, 6, '6636', 'common'],
+  [1, 8, '4162', 'common'],
+  [2, 2, '3068b', 'limited'],
+  [2, 4, '87079', 'common'],
+  [2, 6, '69729', 'core'],
+  [6, 6, '10202', 'core'],
+];
+
+/**
+ * Slopes.
+ *
+ * A stepped diagonal reads as Minecraft and a sloped one reads as LEGO; this is
+ * the single biggest visual difference between a voxel dump and a designed
+ * model, and the catalogue used to exclude these outright.
+ *
+ * `[a, b, code, angle, run, inverted, supply]` — footprint a x b studs, ramp
+ * running `run` studs along the long axis. Every one of these is brick height.
+ */
+const SLOPE_SPECS: Array<[number, number, string, number, number, boolean, ColorSupply]> = [
+  [1, 2, '3040', 45, 1, false, 'limited'],
+  [2, 2, '3039', 45, 1, false, 'limited'],
+  [2, 3, '3038', 45, 1, false, 'common'],
+  [2, 4, '3037', 45, 1, false, 'common'],
+  [1, 3, '4286', 33, 2, false, 'common'],
+  [2, 3, '3298', 33, 2, false, 'common'],
+  [1, 2, '3665', 45, 1, true, 'limited'],
+  [2, 2, '3660', 45, 1, true, 'limited'],
+];
+
+function build(
+  list: Array<[number, number, string, ColorSupply]>,
+  height: PartHeight,
+  shape: 'brick' | 'plate' | 'tile',
+): PartDef[] {
+  const label = shape === 'brick' ? 'Brick' : shape === 'plate' ? 'Plate' : 'Tile';
+  return list.map(([a, b, code, supply]) => ({
+    id: `${shape}-${a}x${b}`,
     code,
-    name: `${label === 'brick' ? 'Brick' : 'Plate'} ${a} x ${b}`,
+    name: `${label} ${a} x ${b}`,
     a,
     b,
     height,
+    shape,
+    studs: shape === 'tile' ? 0 : a * b,
+    supply,
+  }));
+}
+
+function buildSlopes(): PartDef[] {
+  return SLOPE_SPECS.map(([a, b, code, angle, run, inverted, supply]) => ({
+    // Angle and inversion are both in the id because 3038 and 3298 share a 2x3
+    // footprint and differ only in how far the ramp runs.
+    id: `slope${inverted ? 'inv' : ''}${angle}-${a}x${b}`,
+    code,
+    name: `Slope ${inverted ? 'Inverted ' : ''}${angle} ${b} x ${a}`,
+    a,
+    b,
+    height: PLATES_PER_BRICK as PartHeight,
+    shape: 'slope' as const,
+    // The ramp eats the studs it passes under; an inverted slope keeps a full
+    // flat top and cuts the underside instead.
+    studs: inverted ? a * b : (b - run) * a,
+    supply,
+    slope: { angle, run, rise: PLATES_PER_BRICK, inverted },
   }));
 }
 
 export const BRICKS: PartDef[] = build(BRICK_FOOTPRINTS, PLATES_PER_BRICK as PartHeight, 'brick');
 export const PLATES: PartDef[] = build(PLATE_FOOTPRINTS, 1, 'plate');
-export const ALL_PARTS: PartDef[] = [...BRICKS, ...PLATES];
+export const TILES: PartDef[] = build(TILE_FOOTPRINTS, 1, 'tile');
+export const SLOPES: PartDef[] = buildSlopes();
+export const ALL_PARTS: PartDef[] = [...BRICKS, ...PLATES, ...TILES, ...SLOPES];
+
+export const PART_BY_ID: ReadonlyMap<string, PartDef> = new Map(ALL_PARTS.map((p) => [p.id, p]));
 
 const byKey = new Map<string, PartDef>();
-for (const p of ALL_PARTS) {
+for (const p of [...BRICKS, ...PLATES]) {
   byKey.set(`${p.height}:${p.a}x${p.b}`, p);
 }
 
 /**
- * Look up the element for a footprint. `w` runs along X and `d` along Z, so
- * both orientations of an asymmetric part resolve to the same element.
+ * Look up the *solid* element for a footprint — the brick or the plate. `w`
+ * runs along X and `d` along Z, so both orientations of an asymmetric part
+ * resolve to the same element.
+ *
+ * Tiles share a height with plates and slopes share one with bricks, so a
+ * footprint alone no longer identifies an element. Anything that starts from a
+ * `Placement` should go through `PART_BY_ID.get(placement.partId)` instead;
+ * this stays footprint-keyed for the callers that are choosing a shape rather
+ * than describing one that has already been chosen.
  */
 export function findPart(w: number, d: number, height: PartHeight): PartDef | undefined {
   const a = Math.min(w, d);
   const b = Math.max(w, d);
   return byKey.get(`${height}:${a}x${b}`);
+}
+
+const byShape = new Map<string, PartDef>();
+for (const p of ALL_PARTS) {
+  // Slopes are keyed on their run as well, because a 45 degree 2x3 and a 33
+  // degree 3x2 are the same footprint and different elements.
+  if (p.shape === 'slope') continue;
+  byShape.set(`${p.shape}:${p.a}x${p.b}`, p);
+}
+
+/** Look up a brick, plate or tile by footprint. */
+export function findShapePart(
+  shape: 'brick' | 'plate' | 'tile',
+  w: number,
+  d: number,
+): PartDef | undefined {
+  return byShape.get(`${shape}:${Math.min(w, d)}x${Math.max(w, d)}`);
+}
+
+/** Can this element be had in this colour? See the supply note in `colors.ts`. */
+export function isAvailable(part: PartDef, color: Pick<LegoColor, 'supply'>): boolean {
+  return supplySupports(color.supply, part.supply);
 }
 
 export interface Footprint {
@@ -113,11 +321,11 @@ export interface Footprint {
 }
 
 /**
- * Every placeable (w, d) orientation for a given height, largest first.
+ * Every placeable (w, d) orientation for a set of elements, largest first.
  * The tiler walks this list, so ordering it by area up front means the greedy
  * pass naturally reaches for big, strong parts before falling back to 1x1s.
  */
-function footprintsFor(parts: PartDef[]): Footprint[] {
+export function footprintsFor(parts: readonly PartDef[]): Footprint[] {
   const out: Footprint[] = [];
   const seen = new Set<string>();
   for (const part of parts) {
@@ -137,6 +345,7 @@ function footprintsFor(parts: PartDef[]): Footprint[] {
 
 export const BRICK_FOOTPRINT_LIST = footprintsFor(BRICKS);
 export const PLATE_FOOTPRINT_LIST = footprintsFor(PLATES);
+export const TILE_FOOTPRINT_LIST = footprintsFor(TILES);
 
 /** Baseplates the finished model can be mounted on. */
 export const BASEPLATES: Array<{ studs: number; code: string; name: string }> = [

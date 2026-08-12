@@ -1,12 +1,53 @@
 /**
- * A curated palette of solid LEGO colours that are widely produced in basic
- * bricks and plates, together with their official LDraw colour codes so the
- * exported .ldr file opens correctly in Stud.io / LeoCAD / Bricklink Studio.
+ * A curated palette of solid LEGO colours, together with their official LDraw
+ * colour codes so the exported .ldr file opens correctly in Stud.io / LeoCAD /
+ * Bricklink Studio.
  *
  * Only opaque solid colours are listed: transparent, chrome, glitter and
  * rubber materials are not available across the standard brick catalogue and
  * would make the bill of materials impossible to source.
+ *
+ * ## Supply
+ *
+ * A colour existing is not the same as a colour existing *in the element you
+ * want*, and the difference is the whole reason the parts list used to be
+ * unbuyable. The generator happily asked for "Brick 1 x 16 in Very Light Bluish
+ * Gray x3" — a colour LEGO stopped making around 2004 — and "Brick 1 x 10 in
+ * Rust x1", a 1980s colour that only exists second-hand. Two lines like that
+ * make the whole order unfillable, and the file that produced them claimed in
+ * its own header that every footprint was "available in most solid colours".
+ *
+ * So every colour carries a coarse supply tier, and every element in
+ * `catalog.ts` carries the narrowest tier it is actually moulded in. The tiler
+ * may only put a colour into an element when the two agree.
+ *
+ * **This is hand-encoded catalogue knowledge, not a Bricklink query** — there is
+ * no network access to Bricklink from the build, and nothing here has been
+ * checked against live inventory. It is deliberately pessimistic: the cost of
+ * calling a real combination `limited` is one slightly smaller part, and the
+ * cost of calling an unavailable one `core` is a parts list nobody can order.
+ * The tiers are:
+ *
+ *   core     the structural workhorses. Made in every footprint including the
+ *            long 1x10 / 1x12 / 1x16 bricks and the big plates.
+ *   common   in current production and easy to buy across the everyday range,
+ *            roughly 1x1 through 2x8 in bricks and up to 4x6 in plates.
+ *   limited  a real, current colour that is scarce in *basic bricks* — it lives
+ *            in plates, tiles, slopes and specialty parts. Small footprints
+ *            only.
+ *   retired  not produced any more. Never emitted, at any size.
  */
+
+/** How widely a colour is produced. See the note above. */
+export type ColorSupply = 'core' | 'common' | 'limited' | 'retired';
+
+/** Higher is more widely available; an element needs a colour at or above its own tier. */
+export const SUPPLY_RANK: Record<ColorSupply, number> = {
+  core: 3,
+  common: 2,
+  limited: 1,
+  retired: 0,
+};
 
 export interface LegoColor {
   /** Official LDraw colour code, used by the .ldr exporter. */
@@ -17,56 +58,61 @@ export interface LegoColor {
   rgb: [number, number, number];
   /** CIE L*a*b*, precomputed for perceptual matching. */
   lab: [number, number, number];
+  /** How widely this colour is produced; see the note at the top of the file. */
+  supply: ColorSupply;
 }
 
 interface RawColor {
   ldraw: number;
   name: string;
   hex: string;
+  supply: ColorSupply;
 }
 
 const RAW: RawColor[] = [
-  { ldraw: 0, name: 'Black', hex: '05131D' },
-  { ldraw: 308, name: 'Dark Brown', hex: '352100' },
-  { ldraw: 70, name: 'Reddish Brown', hex: '582A12' },
-  { ldraw: 84, name: 'Medium Nougat', hex: 'AA7D55' },
-  { ldraw: 92, name: 'Nougat', hex: 'D09168' },
-  { ldraw: 78, name: 'Light Nougat', hex: 'F6D7B3' },
-  { ldraw: 28, name: 'Dark Tan', hex: '958A73' },
-  { ldraw: 19, name: 'Tan', hex: 'E4CD9E' },
-  { ldraw: 15, name: 'White', hex: 'FFFFFF' },
-  { ldraw: 503, name: 'Very Light Bluish Gray', hex: 'E6E3E0' },
-  { ldraw: 71, name: 'Light Bluish Gray', hex: 'A0A5A9' },
-  { ldraw: 72, name: 'Dark Bluish Gray', hex: '6C6E68' },
-  { ldraw: 320, name: 'Dark Red', hex: '720E0F' },
-  { ldraw: 216, name: 'Rust', hex: 'B31004' },
-  { ldraw: 4, name: 'Red', hex: 'C91A09' },
-  { ldraw: 484, name: 'Dark Orange', hex: 'A95500' },
-  { ldraw: 25, name: 'Orange', hex: 'FE8A18' },
-  { ldraw: 191, name: 'Bright Light Orange', hex: 'FCAC00' },
-  { ldraw: 14, name: 'Yellow', hex: 'F2CD37' },
-  { ldraw: 226, name: 'Bright Light Yellow', hex: 'FFF03A' },
-  { ldraw: 27, name: 'Lime', hex: 'BBE90B' },
-  { ldraw: 326, name: 'Yellowish Green', hex: 'DFEEA5' },
-  { ldraw: 10, name: 'Bright Green', hex: '4B9F4A' },
-  { ldraw: 2, name: 'Green', hex: '237841' },
-  { ldraw: 288, name: 'Dark Green', hex: '184632' },
-  { ldraw: 330, name: 'Olive Green', hex: '77774E' },
-  { ldraw: 378, name: 'Sand Green', hex: 'A0BCAC' },
-  { ldraw: 323, name: 'Light Aqua', hex: 'ADC3C0' },
-  { ldraw: 322, name: 'Medium Azure', hex: '36AEBF' },
-  { ldraw: 321, name: 'Dark Azure', hex: '078BC9' },
-  { ldraw: 212, name: 'Bright Light Blue', hex: '9DC3F7' },
-  { ldraw: 73, name: 'Medium Blue', hex: '5A93DB' },
-  { ldraw: 1, name: 'Blue', hex: '0055BF' },
-  { ldraw: 272, name: 'Dark Blue', hex: '0A3463' },
-  { ldraw: 379, name: 'Sand Blue', hex: '6074A1' },
-  { ldraw: 85, name: 'Dark Purple', hex: '3F3691' },
-  { ldraw: 22, name: 'Purple', hex: '81007B' },
-  { ldraw: 26, name: 'Magenta', hex: '923978' },
-  { ldraw: 5, name: 'Dark Pink', hex: 'C870A0' },
-  { ldraw: 29, name: 'Bright Pink', hex: 'E4ADC8' },
-  { ldraw: 13, name: 'Pink', hex: 'FC97AC' },
+  { ldraw: 0, name: 'Black', hex: '05131D', supply: 'core' },
+  { ldraw: 308, name: 'Dark Brown', hex: '352100', supply: 'common' },
+  { ldraw: 70, name: 'Reddish Brown', hex: '582A12', supply: 'core' },
+  { ldraw: 84, name: 'Medium Nougat', hex: 'AA7D55', supply: 'common' },
+  { ldraw: 92, name: 'Nougat', hex: 'D09168', supply: 'common' },
+  { ldraw: 78, name: 'Light Nougat', hex: 'F6D7B3', supply: 'limited' },
+  { ldraw: 28, name: 'Dark Tan', hex: '958A73', supply: 'common' },
+  { ldraw: 19, name: 'Tan', hex: 'E4CD9E', supply: 'core' },
+  { ldraw: 15, name: 'White', hex: 'FFFFFF', supply: 'core' },
+  // Discontinued around 2004. Basic bricks in it are collector stock.
+  { ldraw: 503, name: 'Very Light Bluish Gray', hex: 'E6E3E0', supply: 'retired' },
+  { ldraw: 71, name: 'Light Bluish Gray', hex: 'A0A5A9', supply: 'core' },
+  { ldraw: 72, name: 'Dark Bluish Gray', hex: '6C6E68', supply: 'core' },
+  { ldraw: 320, name: 'Dark Red', hex: '720E0F', supply: 'common' },
+  // A 1980s colour. "Brick 1 x 3 in Rust x17" is not an order anyone can place.
+  { ldraw: 216, name: 'Rust', hex: 'B31004', supply: 'retired' },
+  { ldraw: 4, name: 'Red', hex: 'C91A09', supply: 'core' },
+  { ldraw: 484, name: 'Dark Orange', hex: 'A95500', supply: 'common' },
+  { ldraw: 25, name: 'Orange', hex: 'FE8A18', supply: 'common' },
+  { ldraw: 191, name: 'Bright Light Orange', hex: 'FCAC00', supply: 'common' },
+  { ldraw: 14, name: 'Yellow', hex: 'F2CD37', supply: 'core' },
+  { ldraw: 226, name: 'Bright Light Yellow', hex: 'FFF03A', supply: 'common' },
+  { ldraw: 27, name: 'Lime', hex: 'BBE90B', supply: 'common' },
+  { ldraw: 326, name: 'Yellowish Green', hex: 'DFEEA5', supply: 'limited' },
+  { ldraw: 10, name: 'Bright Green', hex: '4B9F4A', supply: 'common' },
+  { ldraw: 2, name: 'Green', hex: '237841', supply: 'common' },
+  { ldraw: 288, name: 'Dark Green', hex: '184632', supply: 'common' },
+  { ldraw: 330, name: 'Olive Green', hex: '77774E', supply: 'limited' },
+  { ldraw: 378, name: 'Sand Green', hex: 'A0BCAC', supply: 'limited' },
+  { ldraw: 323, name: 'Light Aqua', hex: 'ADC3C0', supply: 'limited' },
+  { ldraw: 322, name: 'Medium Azure', hex: '36AEBF', supply: 'common' },
+  { ldraw: 321, name: 'Dark Azure', hex: '078BC9', supply: 'common' },
+  { ldraw: 212, name: 'Bright Light Blue', hex: '9DC3F7', supply: 'common' },
+  { ldraw: 73, name: 'Medium Blue', hex: '5A93DB', supply: 'common' },
+  { ldraw: 1, name: 'Blue', hex: '0055BF', supply: 'core' },
+  { ldraw: 272, name: 'Dark Blue', hex: '0A3463', supply: 'common' },
+  { ldraw: 379, name: 'Sand Blue', hex: '6074A1', supply: 'limited' },
+  { ldraw: 85, name: 'Dark Purple', hex: '3F3691', supply: 'common' },
+  { ldraw: 22, name: 'Purple', hex: '81007B', supply: 'limited' },
+  { ldraw: 26, name: 'Magenta', hex: '923978', supply: 'limited' },
+  { ldraw: 5, name: 'Dark Pink', hex: 'C870A0', supply: 'limited' },
+  { ldraw: 29, name: 'Bright Pink', hex: 'E4ADC8', supply: 'common' },
+  { ldraw: 13, name: 'Pink', hex: 'FC97AC', supply: 'limited' },
 ];
 
 export function hexToRgb(hex: string): [number, number, number] {
@@ -177,7 +223,7 @@ export function deltaE2000(lab1: readonly number[], lab2: readonly number[]): nu
   );
 }
 
-export const PALETTE: LegoColor[] = RAW.map((c) => {
+function toColor(c: RawColor): LegoColor {
   const rgb = hexToRgb(c.hex);
   return {
     ldraw: c.ldraw,
@@ -185,10 +231,34 @@ export const PALETTE: LegoColor[] = RAW.map((c) => {
     hex: `#${c.hex}`,
     rgb,
     lab: rgbToLab(rgb[0], rgb[1], rgb[2]),
+    supply: c.supply,
   };
-});
+}
 
-export const COLOR_BY_LDRAW = new Map<number, LegoColor>(PALETTE.map((c) => [c.ldraw, c]));
+/**
+ * Every colour this file knows about, retired ones included, so a name and a
+ * swatch can still be found for a model that was built before a colour was
+ * reclassified.
+ */
+export const ALL_COLORS: LegoColor[] = RAW.map(toColor);
+
+/**
+ * The colours the generator may choose from.
+ *
+ * Retired colours are not in here at all. A palette entry is an offer to build
+ * the model in that colour, and offering a colour that has not been moulded
+ * since 2004 is not a near-miss on fidelity, it is a parts list that cannot be
+ * filled. The colour cost of dropping the two is small — both sit within a
+ * couple of deltaE of a colour that is still made.
+ */
+export const PALETTE: LegoColor[] = ALL_COLORS.filter((c) => c.supply !== 'retired');
+
+export const COLOR_BY_LDRAW = new Map<number, LegoColor>(ALL_COLORS.map((c) => [c.ldraw, c]));
+
+/** Is this colour produced widely enough for an element of the given tier? */
+export function supplySupports(colorSupply: ColorSupply, needed: ColorSupply): boolean {
+  return SUPPLY_RANK[colorSupply] >= SUPPLY_RANK[needed];
+}
 
 /**
  * Index (into `palette`) of the perceptually closest LEGO colour.

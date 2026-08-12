@@ -1,4 +1,4 @@
-import type { PartHeight } from './core/lego/catalog';
+import type { PartHeight, SlopeFacing } from './core/lego/catalog';
 
 /** How the flat photo is lifted into a solid. */
 export type SolidMode = 'relief' | 'symmetric' | 'revolve';
@@ -92,6 +92,13 @@ export interface Placement {
   z: number;
   /** LDraw colour code. */
   color: number;
+  /**
+   * Which way a sloped face descends, in grid axes. Set on slopes and on
+   * nothing else: a 2x1 slope pointing east and one pointing west are the same
+   * element in two orientations, so the footprint alone cannot say which. The
+   * geometry it refers to is described by `SlopeGeometry` in `catalog.ts`.
+   */
+  facing?: SlopeFacing;
   /** True when the tiler added this purely to hold something else up. */
   support?: boolean;
   /**
