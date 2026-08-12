@@ -42,14 +42,22 @@ interface Entry {
 
 interface Batch {
   entries: Entry[];
+  /** Half the part's height, mm: the pivot the outline shell grows about. */
+  centreY: number;
+  /** Per-axis scale that pushes the shell out by OUTLINE_MM on every face. */
+  shell: THREE.Vector3;
   placed: THREE.InstancedMesh;
   current: THREE.InstancedMesh;
   ghost: THREE.InstancedMesh;
+  outline: THREE.InstancedMesh;
 }
 
 const SUPPORT_TINT = new THREE.Color(0x9aa4ad);
 const DROP_HEIGHT_MM = 26;
 const DROP_DURATION_MS = 420;
+
+/** How far the current-step shell stands off the part, mm — about 3 screen px. */
+const OUTLINE_MM = 1.1;
 
 /** Real baseplates are thinner than a plate and have no tubes underneath. */
 const BASEPLATE_MM = 1.4;
@@ -144,15 +152,15 @@ export class BrickScene {
 
     // A three-light studio. The key is the only one that casts: a second set of
     // shadows from a fill is a thing you only ever see in renders.
-    this.key = new THREE.DirectionalLight(0xfff6ec, 2.1);
+    this.key = new THREE.DirectionalLight(0xfff6ec, 1.15);
     this.key.position.set(-300, 550, 360);
     this.key.castShadow = true;
     this.scene.add(this.key);
     this.scene.add(this.key.target);
-    const fill = new THREE.DirectionalLight(0xdfe8ff, 0.35);
+    const fill = new THREE.DirectionalLight(0xdfe8ff, 0.24);
     fill.position.set(0.9, 0.35, 0.4);
     this.scene.add(fill);
-    const rim = new THREE.DirectionalLight(0xffffff, 0.55);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.4);
     rim.position.set(-0.35, 0.5, -1);
     this.scene.add(rim);
 
@@ -245,11 +253,21 @@ export class BrickScene {
         this.root.add(mesh);
         return mesh;
       };
+      const bw = w * STUD_MM - 0.2;
+      const bd = d * STUD_MM - 0.2;
+      const bh = h * PLATE_MM;
       this.batches.push({
         entries,
+        centreY: bh / 2,
+        shell: new THREE.Vector3(
+          (bw + OUTLINE_MM * 2) / bw,
+          (bh + OUTLINE_MM * 2) / bh,
+          (bd + OUTLINE_MM * 2) / bd,
+        ),
         placed: make(this.materials.placed, true),
         current: make(this.materials.current, true),
         ghost: make(this.materials.ghost, false),
+        outline: make(this.materials.outline, false),
       });
     }
 
@@ -297,8 +315,8 @@ export class BrickScene {
     // Baseplates come in fixed sizes, so this one does too — snapping the
     // footprint out to a multiple of 8 studs reads as a part rather than as a
     // rectangle cut to fit.
-    const studsX = Math.max(8, roundUpTo(this.modelSize.x / STUD_MM + 3, 8));
-    const studsZ = Math.max(8, roundUpTo(this.modelSize.z / STUD_MM + 3, 8));
+    const studsX = Math.max(8, roundUpTo(this.modelSize.x / STUD_MM + 2, 8));
+    const studsZ = Math.max(8, roundUpTo(this.modelSize.z / STUD_MM + 2, 8));
     const w = studsX * STUD_MM;
     const d = studsZ * STUD_MM;
     // Keep the plate on the stud grid the model is built on, or every stud on
@@ -390,7 +408,7 @@ export class BrickScene {
     // fraction of a plate, enough to kill acne on the flat top faces without
     // lifting shadows off the parts casting them.
     this.key.shadow.bias = -0.0006;
-    this.key.shadow.normalBias = 0.5;
+    this.key.shadow.normalBias = 0.25;
     this.shadowsDirty();
   }
 
@@ -409,9 +427,18 @@ export class BrickScene {
     return this.step;
   }
 
-  /** Rebuild the three instance buffers for the current step. */
+  /**
+   * On the last step there is nothing left to point at — the build is finished
+   * and what you want to look at is the model, not an annotation on it.
+   */
+  private outlineWanted(): boolean {
+    return this.result !== null && this.step < this.result.steps.length - 1;
+  }
+
+  /** Rebuild the instance buffers for the current step. */
   private refreshInstances(): void {
     const matrix = new THREE.Matrix4();
+    const outline = this.outlineWanted();
     for (const batch of this.batches) {
       let nPlaced = 0;
       let nCurrent = 0;
@@ -422,17 +449,24 @@ export class BrickScene {
         const y = p.y * PLATE_MM;
         const z = (p.z + p.d / 2) * STUD_MM;
         const color = this.options.highlightSupports && p.support ? SUPPORT_TINT : entry.color;
-        matrix.makeTranslation(x, y, z);
 
         if (entry.step < this.step) {
+          matrix.makeTranslation(x, y, z);
           batch.placed.setMatrixAt(nPlaced, matrix);
           batch.placed.setColorAt(nPlaced, color);
           nPlaced++;
         } else if (entry.step === this.step) {
+          matrix.makeTranslation(x, y, z);
           batch.current.setMatrixAt(nCurrent, matrix);
           batch.current.setColorAt(nCurrent, color);
+          if (outline) {
+            shellMatrix(matrix, batch, x, y, z);
+            batch.outline.setMatrixAt(nCurrent, matrix);
+            batch.outline.setColorAt(nCurrent, color);
+          }
           nCurrent++;
         } else if (this.options.showGhost) {
+          matrix.makeTranslation(x, y, z);
           batch.ghost.setMatrixAt(nGhost, matrix);
           batch.ghost.setColorAt(nGhost, color);
           nGhost++;
@@ -441,7 +475,8 @@ export class BrickScene {
       batch.placed.count = nPlaced;
       batch.current.count = nCurrent;
       batch.ghost.count = nGhost;
-      for (const mesh of [batch.placed, batch.current, batch.ghost]) {
+      batch.outline.count = outline ? nCurrent : 0;
+      for (const mesh of [batch.placed, batch.current, batch.ghost, batch.outline]) {
         mesh.visible = mesh.count > 0;
         mesh.instanceMatrix.needsUpdate = true;
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -462,22 +497,31 @@ export class BrickScene {
     const eased = 1 - Math.pow(1 - t, 3);
     const offset = (1 - eased) * DROP_HEIGHT_MM;
     const matrix = new THREE.Matrix4();
+    const outline = this.outlineWanted();
     for (const batch of this.batches) {
       let n = 0;
       for (const entry of batch.entries) {
         if (entry.step !== this.step) continue;
         const p = entry.placement;
-        matrix.makeTranslation(
-          (p.x + p.w / 2) * STUD_MM,
-          p.y * PLATE_MM + offset,
-          (p.z + p.d / 2) * STUD_MM,
-        );
+        const x = (p.x + p.w / 2) * STUD_MM;
+        const y = p.y * PLATE_MM + offset;
+        const z = (p.z + p.d / 2) * STUD_MM;
+        matrix.makeTranslation(x, y, z);
         batch.current.setMatrixAt(n, matrix);
+        if (outline) {
+          shellMatrix(matrix, batch, x, y, z);
+          batch.outline.setMatrixAt(n, matrix);
+        }
         n++;
       }
-      if (n > 0) batch.current.instanceMatrix.needsUpdate = true;
+      if (n > 0) {
+        batch.current.instanceMatrix.needsUpdate = true;
+        if (outline) batch.outline.instanceMatrix.needsUpdate = true;
+      }
     }
-    this.materials.current.emissiveIntensity = 0.1 + 0.22 * (1 - eased);
+    // A brief lift as the part lands, gone by the time it settles: the outline
+    // is what marks the step, this only draws the eye to the movement.
+    this.materials.current.emissiveIntensity = 0.22 * (1 - eased);
   }
 
   /**
@@ -580,7 +624,7 @@ export class BrickScene {
 
   private clearModel(): void {
     for (const batch of this.batches) {
-      for (const mesh of [batch.placed, batch.current, batch.ghost]) {
+      for (const mesh of [batch.placed, batch.current, batch.ghost, batch.outline]) {
         this.root.remove(mesh);
         mesh.dispose();
       }
@@ -645,4 +689,16 @@ function studsBuried(p: Placement, covered: Set<number>, result: BuildResult): b
 
 function roundUpTo(value: number, step: number): number {
   return Math.ceil(value / step) * step;
+}
+
+/**
+ * Place the outline shell for one part. Growing it about the part's own centre
+ * rather than pushing vertices along their normals keeps it watertight: a
+ * chamfered box has a different normal on every facet, and displacing along
+ * those splits the shell open at every corner.
+ */
+function shellMatrix(matrix: THREE.Matrix4, batch: Batch, x: number, y: number, z: number): void {
+  const s = batch.shell;
+  matrix.makeScale(s.x, s.y, s.z);
+  matrix.setPosition(x, y + batch.centreY * (1 - s.y), z);
 }

@@ -163,7 +163,12 @@ export function truthExtent(
  * that silently tries both would hide a real bug in the pipeline; the caller
  * reports the disagreement instead.
  */
-export function modelOccupancy(result: BuildResult, lattice: Lattice, flipZ = false): Occupancy {
+export function modelOccupancy(
+  result: BuildResult,
+  lattice: Lattice,
+  flipZ = false,
+  scale = 1,
+): Occupancy {
   const { gridX, gridY, gridZ } = result;
   const dense = new Uint8Array(gridX * gridY * gridZ);
   for (const p of result.placements) {
@@ -180,7 +185,7 @@ export function modelOccupancy(result: BuildResult, lattice: Lattice, flipZ = fa
     }
   }
 
-  const plate = 1 / gridY;
+  const plate = scale / gridY;
   const stud = plate * (STUD_MM / PLATE_MM);
   const halfX = (gridX * stud) / 2;
   const halfZ = (gridZ * stud) / 2;

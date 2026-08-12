@@ -43,23 +43,23 @@ function studioScene(): THREE.Scene {
   // The cyclorama: a dim neutral shell so nothing renders against pure black.
   const shell = new THREE.Mesh(
     new THREE.SphereGeometry(14, 24, 16),
-    new THREE.MeshBasicMaterial({ color: radiance(0.1, 0.105, 0.115, 1), side: THREE.BackSide }),
+    new THREE.MeshBasicMaterial({ color: radiance(0.07, 0.075, 0.085, 1), side: THREE.BackSide }),
   );
   scene.add(shell);
 
   // A brighter upper hemisphere. Sky above, floor below, as in any real room.
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(13, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.42),
-    new THREE.MeshBasicMaterial({ color: radiance(0.42, 0.44, 0.47, 1), side: THREE.BackSide }),
+    new THREE.MeshBasicMaterial({ color: radiance(0.26, 0.275, 0.30, 1), side: THREE.BackSide }),
   );
   scene.add(sky);
 
   // Key softbox: large, close, high and a little to the left and front.
-  panel(radiance(1, 0.99, 0.97, 5.5), [-3.5, 8, 5], [11, 11]);
+  panel(radiance(1, 0.99, 0.97, 3.2), [-3.5, 8, 5], [11, 11]);
   // Cool fill from the right, weak enough to shape without lighting the shot.
-  panel(radiance(0.86, 0.9, 1, 1.1), [9, 2.5, 2.5], [10, 9]);
+  panel(radiance(0.86, 0.9, 1, 0.7), [9, 2.5, 2.5], [10, 9]);
   // Rim strip behind: the highlight that separates the model from the backdrop.
-  panel(radiance(1, 1, 1, 3.2), [-1, 5, -9], [12, 3]);
+  panel(radiance(1, 1, 1, 2.0), [-1, 5, -9], [12, 3]);
   // Bounce off the sweep, so undersides get a little light back.
   panel(radiance(0.6, 0.61, 0.63, 0.55), [0, -6, 2], [16, 16]);
 

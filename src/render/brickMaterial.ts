@@ -21,6 +21,7 @@ export interface CavityUniforms {
   aoVolumeInvSize: { value: THREE.Vector3 };
   aoStrength: { value: number };
   aoBias: { value: number };
+  aoRange: { value: number };
 }
 
 export function createCavityUniforms(): CavityUniforms {
@@ -30,8 +31,9 @@ export function createCavityUniforms(): CavityUniforms {
     // Never zero: a degenerate volume would make every fragment sample the
     // same texel and flatten the whole model to one shade.
     aoVolumeInvSize: { value: new THREE.Vector3(1, 1, 1) },
-    aoStrength: { value: 0.9 },
-    aoBias: { value: 0.34 },
+    aoStrength: { value: 1.0 },
+    aoBias: { value: 0.28 },
+    aoRange: { value: 0.4 },
   };
 }
 
@@ -69,7 +71,7 @@ function cavityChunk(): string {
     vec3 cavityOrigin = vCavityPos + vCavityNormal * 1.0;
     float occ = 0.62 * cavityAt( cavityOrigin + vCavityNormal * 2.5 )
               + 0.38 * cavityAt( cavityOrigin + vCavityNormal * 9.0 );
-    float ambientOcclusion = 1.0 - aoStrength * smoothstep( aoBias, 1.0, occ );
+    float ambientOcclusion = 1.0 - aoStrength * smoothstep( aoBias, aoBias + aoRange, occ );
 
     reflectedLight.indirectDiffuse *= ambientOcclusion;
 
@@ -112,6 +114,7 @@ function withCavityAO(material: THREE.MeshStandardMaterial, uniforms: CavityUnif
         uniform vec3 aoVolumeInvSize;
         uniform float aoStrength;
         uniform float aoBias;
+        uniform float aoRange;
         varying vec3 vCavityPos;
         varying vec3 vCavityNormal;
         float cavityAt( vec3 p ) {
@@ -167,7 +170,7 @@ export function createBrickMaterials(uniforms: CavityUniforms, cavityAO: boolean
     new THREE.MeshStandardMaterial({
       roughness: 0.28,
       metalness: 0.0,
-      envMapIntensity: 1.0,
+      envMapIntensity: 0.6,
     });
 
   const placed = abs();

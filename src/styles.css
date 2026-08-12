@@ -662,10 +662,12 @@ input[type='range'] {
 .viewer-canvas {
   position: relative;
   width: 100%;
-  height: clamp(320px, 52vh, 560px);
+  height: clamp(340px, 56vh, 620px);
   border-radius: 10px;
   overflow: hidden;
-  background: linear-gradient(180deg, #1a222c 0%, #11151b 100%);
+  /* Matches the studio sweep the renderer draws, so there is no dark flash
+     between the panel appearing and the first frame landing. */
+  background: linear-gradient(180deg, #5c646e 0%, #464d56 55%, #2b3037 100%);
 }
 
 .viewer-canvas canvas {
