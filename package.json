@@ -13,15 +13,16 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "predev": "node scripts/sync-ort.mjs",
-    "prebuild": "node scripts/sync-ort.mjs",
-    "pretest": "node scripts/sync-ort.mjs",
+    "prebuild": "node scripts/sync-ort.mjs && node scripts/check-models.mjs",
+    "pretest": "node scripts/sync-ort.mjs && node scripts/check-models.mjs",
     "bench": "vite-node bench/run.ts",
     "bench:browser": "node bench/browser.mjs",
     "bench:3d": "vite-node bench/run3d.ts",
     "bench:quality": "vite-node bench/quality.ts",
     "bench:photos": "vite-node bench/makephotos.ts",
     "e2e": "node bench/e2e.mjs",
-    "e2e:multiview": "node bench/e2e-multiview.mjs"
+    "e2e:multiview": "node bench/e2e-multiview.mjs",
+    "check:models": "node scripts/check-models.mjs"
   },
   "dependencies": {
     "onnxruntime-web": "^1.27.0",
