@@ -277,6 +277,8 @@ export interface ReliefMeasurement {
   inner: Mask;
   /** Multiplier on the depth prior; see `reliefScaleFrom`. */
   reliefScale: number | null;
+  /** The depth map had no range over the object: a plane facing the camera. */
+  flat: boolean;
 }
 
 /**
@@ -308,14 +310,19 @@ export function measureRelief(
     count = 0;
     for (let i = 0; i < n; i++) if (mask[i]) scratch[count++] = relief[i];
   }
-  if (count === 0) return { elevation, inner, reliefScale: null };
+  if (count === 0) return { elevation, inner, reliefScale: null, flat: true };
 
   const lo = percentile(scratch, count, 0.02);
   const hi = percentile(scratch, count, 0.98);
   const span = hi - lo;
   const reliefScale = reliefScaleFrom(relief, mask, span);
 
-  if (span > 1e-9) {
+  // A depth map with no range at all is not a failed measurement, it is a
+  // measurement of a plane: a surface that does not turn away from the camera
+  // anywhere. Saying so is better than falling back on the class prior, and
+  // safer — the failure it avoids is the pillow this whole file exists to undo.
+  const flat = !(span > 1e-9);
+  if (!flat) {
     for (let i = 0; i < n; i++) {
       if (!mask[i]) continue;
       elevation[i] = Math.max(0, Math.min(1, (relief[i] - lo) / span));
@@ -324,7 +331,21 @@ export function measureRelief(
     for (let i = 0; i < n; i++) if (mask[i]) elevation[i] = 0.5;
   }
   const radius = Math.max(1, Math.round(Math.min(width, height) * smoothing));
-  return { elevation: boxBlur(elevation, width, height, radius, 2), inner, reliefScale };
+  // Smoothed *within* the mask. A plain blur mixes in the zeros outside it, so
+  // the elevation sags toward the outline on every object — which pulls the
+  // front surface back at the rim, and, worse, is itself perfectly correlated
+  // with distance-to-edge, so a flat plate measured as 0.52 round. Dividing by
+  // the blurred mask is the standard normalised convolution and removes both.
+  const coverage = new Float32Array(n);
+  for (let i = 0; i < n; i++) coverage[i] = mask[i] ? 1 : 0;
+  const numerator = boxBlur(elevation, width, height, radius, 2);
+  const denominator = boxBlur(coverage, width, height, radius, 2);
+  const smoothed = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (!mask[i]) continue;
+    smoothed[i] = denominator[i] > 1e-6 ? numerator[i] / denominator[i] : elevation[i];
+  }
+  return { elevation: smoothed, inner, reliefScale, flat };
 }
 
 /**
@@ -374,8 +395,11 @@ export function depthFieldFromRelief(
     dist,
     closureBand(maxDist, options.halfDepthPx, 1),
   );
-  const roundness =
-    measured === null ? options.roundness : 0.3 * options.roundness + 0.7 * measured;
+  const roundness = measurement.flat
+    ? 0
+    : measured === null
+      ? options.roundness
+      : 0.3 * options.roundness + 0.7 * measured;
   const profile = closureProfile(dist, mask, closureBand(maxDist, options.halfDepthPx, roundness));
 
   // The relief redistributes depth rather than adding it, so it is measured

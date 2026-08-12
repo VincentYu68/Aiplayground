@@ -136,7 +136,10 @@ for (const photo of photos) {
     await page.waitForTimeout(900);
     // Clip a page screenshot rather than shooting the element: the viewer runs
     // an idle animation, so waiting for the canvas to be "stable" never returns.
-    const clip = await page.locator('.viewer-canvas').boundingBox();
+    const clip = await page.$eval('.viewer-canvas', (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    });
     await page.screenshot({ path: `${OUT}/${label}-${view.toLowerCase()}.png`, clip });
   }
 }

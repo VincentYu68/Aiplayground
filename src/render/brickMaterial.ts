@@ -133,7 +133,33 @@ export interface BrickMaterials {
   ghost: THREE.MeshStandardMaterial;
   /** The baseplate the model stands on. */
   plate: THREE.MeshStandardMaterial;
-  all(): THREE.MeshStandardMaterial[];
+  /** Shell drawn around the current step's parts. */
+  outline: THREE.MeshBasicMaterial;
+  all(): THREE.Material[];
+}
+
+/**
+ * The shell around the current step's parts.
+ *
+ * It cannot be a fixed colour and it cannot be a glow: a white glow on a white
+ * brick is invisible, which is exactly how a step became impossible to find in
+ * the manual. So the shell reads the part's own colour out of the instance
+ * attribute and draws whichever of near-black or white that colour is not —
+ * every element in the palette ends up with a high-contrast edge, and no part
+ * of the palette can collide with it.
+ */
+function outlineMaterial(): THREE.MeshBasicMaterial {
+  const material = new THREE.MeshBasicMaterial({ side: THREE.BackSide, toneMapped: false });
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      /* glsl */ `#include <color_fragment>
+      float partLuma = dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+      diffuseColor.rgb = partLuma > 0.25 ? vec3( 0.004 ) : vec3( 1.0 );`,
+    );
+  };
+  material.customProgramCacheKey = () => 'brickify-outline';
+  return material;
 }
 
 export function createBrickMaterials(uniforms: CavityUniforms, cavityAO: boolean): BrickMaterials {
@@ -146,10 +172,11 @@ export function createBrickMaterials(uniforms: CavityUniforms, cavityAO: boolean
 
   const placed = abs();
   const current = abs();
-  // A wash of light rather than a colour cast: tinting the highlight would
-  // fight the palette, and the drop animation already says which parts are new.
+  // No standing tint. The parts going on now are called out by the outline
+  // shell, which cannot be swallowed by the part's own colour; a wash of
+  // emissive can, and it drains the colour out of the finished model as well.
   current.emissive = new THREE.Color(0xffffff);
-  current.emissiveIntensity = 0.1;
+  current.emissiveIntensity = 0;
 
   const plate = abs();
   plate.roughness = 0.34;
@@ -162,8 +189,17 @@ export function createBrickMaterials(uniforms: CavityUniforms, cavityAO: boolean
     depthWrite: false,
   });
 
+  const outline = outlineMaterial();
+
   const solid = [placed, current, plate];
   if (cavityAO) for (const m of solid) withCavityAO(m, uniforms);
 
-  return { placed, current, ghost, plate, all: () => [placed, current, ghost, plate] };
+  return {
+    placed,
+    current,
+    ghost,
+    plate,
+    outline,
+    all: () => [placed, current, ghost, plate, outline],
+  };
 }

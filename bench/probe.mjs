@@ -49,6 +49,8 @@ await waitForServer(base);
 
 const browser = await chromium.launch({ executablePath: findChromium() });
 const page = await browser.newPage({ viewport: { width: 1400, height: 950 } });
+// Software rendering makes every interaction slow; the default 30s is not enough.
+page.setDefaultTimeout(180000);
 
 const console_ = [];
 const requests = [];
@@ -92,8 +94,14 @@ console.log('--- console ---');
 console.log(console_.slice(0, 40).join('\n') || '(none)');
 
 // Screenshot every angle, not just the flattering one.
-const boxes = await page.$$('.viewer-toggles input[type=checkbox]');
-for (const b of boxes) if (await b.isChecked()) await b.uncheck();
+//
+// Toggles and the slider are driven through the DOM rather than by clicking.
+// Playwright's actionability check waits for the element to be "stable", and a
+// software-rendered WebGL canvas repainting at about a frame a second never
+// looks stable, so a real click times out on a model that is otherwise fine.
+await page.$$eval('.viewer-toggles input[type=checkbox]', (boxes) => {
+  for (const b of boxes) if (b.checked) b.click();
+});
 await page.$eval('.step-slider', (el) => {
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
   setter.call(el, el.max);
@@ -107,7 +115,7 @@ for (const view of ['ISO', 'FRONT', 'SIDE', 'TOP']) {
     (btns, want) => btns.find((b) => b.textContent.trim().toUpperCase() === want)?.click(),
     view,
   );
-  await page.waitForTimeout(900);
+  await page.waitForTimeout(2500);
   await page.locator('.viewer-canvas').screenshot({ path: `${OUT}/${label}-${view.toLowerCase()}.png` });
 }
 console.log(`shots in ${OUT}`);
