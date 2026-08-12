@@ -229,12 +229,30 @@ export function meshBounds(mesh: MeshSpec, into?: Bounds): Bounds {
       );
       break;
     case 'capsule':
-    case 'cylinder':
       for (const p of [mesh.a, mesh.b]) {
         grow(b, p[0] - mesh.r, p[1] - mesh.r, p[2] - mesh.r);
         grow(b, p[0] + mesh.r, p[1] + mesh.r, p[2] + mesh.r);
       }
       break;
+    case 'cylinder': {
+      // Not a sphere-swept segment: a cylinder ends in a flat disc, so along its
+      // own axis it reaches exactly its endpoint. Padding by r there put the
+      // book's spine 65 thousandths below the floor it is standing on.
+      const dx = mesh.b[0] - mesh.a[0];
+      const dy = mesh.b[1] - mesh.a[1];
+      const dz = mesh.b[2] - mesh.a[2];
+      const length = Math.hypot(dx, dy, dz) || 1;
+      const pad: Vec3 = [
+        mesh.r * Math.sqrt(Math.max(0, 1 - (dx / length) ** 2)),
+        mesh.r * Math.sqrt(Math.max(0, 1 - (dy / length) ** 2)),
+        mesh.r * Math.sqrt(Math.max(0, 1 - (dz / length) ** 2)),
+      ];
+      for (const p of [mesh.a, mesh.b]) {
+        grow(b, p[0] - pad[0], p[1] - pad[1], p[2] - pad[2]);
+        grow(b, p[0] + pad[0], p[1] + pad[1], p[2] + pad[2]);
+      }
+      break;
+    }
     case 'torus': {
       const wide = mesh.ring + mesh.tube;
       const half: Vec3 =
@@ -289,6 +307,56 @@ export function partsBounds(parts: Part[]): Bounds {
 export function insideParts(parts: Part[], x: number, y: number, z: number): boolean {
   for (const part of parts) if (insideMesh(part.mesh, x, y, z)) return true;
   return false;
+}
+
+/** Uniformly scale about the origin, then lift. */
+function scaleMesh(mesh: MeshSpec, s: number, lift: number): MeshSpec {
+  const p = (v: Vec3): Vec3 => [v[0] * s, v[1] * s + lift, v[2] * s];
+  const poly = (points: Vec2[]): Vec2[] => points.map(([u, v]) => [u * s, v * s] as Vec2);
+  switch (mesh.kind) {
+    case 'box':
+      return { ...mesh, half: [mesh.half[0] * s, mesh.half[1] * s, mesh.half[2] * s], pos: p(mesh.pos) };
+    case 'ellipsoid':
+      return {
+        ...mesh,
+        radii: [mesh.radii[0] * s, mesh.radii[1] * s, mesh.radii[2] * s],
+        pos: p(mesh.pos),
+      };
+    case 'capsule':
+    case 'cylinder':
+      return { ...mesh, a: p(mesh.a), b: p(mesh.b), r: mesh.r * s };
+    case 'torus':
+      return { ...mesh, pos: p(mesh.pos), ring: mesh.ring * s, tube: mesh.tube * s };
+    case 'lathe':
+      return { ...mesh, profile: poly(mesh.profile), pos: p(mesh.pos) };
+    case 'prism':
+      return {
+        ...mesh,
+        outline: poly(mesh.outline),
+        holes: mesh.holes.map(poly),
+        depth: mesh.depth * s,
+        pos: p(mesh.pos),
+      };
+  }
+}
+
+/**
+ * Put an object exactly one unit tall, standing on the ground.
+ *
+ * The comparison frame measures everything as a fraction of the object's own
+ * height, and the renders stand the object on a floor at y = 0. Both were
+ * originally satisfied by authoring the numbers carefully, which lasted until
+ * a rounded corner shaved a thousandth off a roof and a cylinder's bounds put a
+ * book's spine below the floorboards. Doing it arithmetically means the shapes
+ * can be authored at whatever size reads clearly and still land exactly.
+ */
+export function normaliseParts(parts: Part[]): Part[] {
+  const b = partsBounds(parts);
+  const height = b.max[1] - b.min[1];
+  if (!(height > 0)) throw new Error('object has no height');
+  const s = 1 / height;
+  const lift = -b.min[1] * s;
+  return parts.map((part) => ({ ...part, mesh: scaleMesh(part.mesh, s, lift) }));
 }
 
 // --- polygon helpers -------------------------------------------------------

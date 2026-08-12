@@ -137,6 +137,15 @@ export interface StabilityReport {
   issues: StabilityIssue[];
 }
 
+/**
+ * How close the finished model is to the photo.
+ *
+ * Every number here is measured on `placements` — the parts the user actually
+ * receives. It used to be measured on the voxel grid the parts were derived
+ * from, which made the whole report describe an intermediate: a frame that
+ * tiled down to a single 1x16 brick still reported a perfect silhouette and a
+ * perfect stability score, because nothing the tiler did was ever looked at.
+ */
 export interface FidelityReport {
   /** Silhouette intersection-over-union against the source mask, 0..1. */
   silhouetteIoU: number;
@@ -144,6 +153,37 @@ export interface FidelityReport {
   meanDeltaE: number;
   /** Front-facing render of the model, one pixel per (stud, plate). */
   preview: { width: number; height: number; rgba: Uint8ClampedArray };
+  /** Voxels intended by the grid against voxels the parts actually deliver. */
+  volume: {
+    intended: number;
+    built: number;
+    missing: number;
+    /** `missing / intended`; above `MAX_MISSING_FRACTION` the report is withheld. */
+    missingFraction: number;
+  };
+  /** Scaffolding the builder adds that was never part of the photographed object. */
+  support: {
+    parts: number;
+    partShare: number;
+    voxels: number;
+    volumeShare: number;
+  };
+  /**
+   * Parts against intent from three sides.
+   *
+   * The front alone is the metric an extrusion cannot fail, so it is never
+   * quoted on its own: side and top are what say whether material went missing
+   * somewhere the photograph could not see.
+   */
+  agreement: { front: number; side: number; top: number };
+  /**
+   * False when too much of the shape was deleted for the other numbers to be
+   * claims about the model the user is getting. The UI must not quote a score
+   * when this is false.
+   */
+  measured: boolean;
+  /** Plain-language problems worth showing the user, most important first. */
+  issues: string[];
 }
 
 export interface PartsListEntry {

@@ -18,6 +18,7 @@
 
 import {
   circle,
+  normaliseParts,
   partsBounds,
   rectangle,
   roundPolygon,
@@ -533,7 +534,16 @@ function gear(): CorpusObject {
   };
 }
 
-export const CORPUS: CorpusObject[] = [car(), mug(), book(), chair(), teddy(), frame(), bottle(), gear()];
+export const CORPUS: CorpusObject[] = [
+  car(),
+  mug(),
+  book(),
+  chair(),
+  teddy(),
+  frame(),
+  bottle(),
+  gear(),
+].map((object) => ({ ...object, parts: normaliseParts(object.parts) }));
 
 export function objectByName(name: string): CorpusObject {
   const found = CORPUS.find((o) => o.name === name);

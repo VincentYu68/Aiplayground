@@ -129,6 +129,10 @@ async function main(): Promise<void> {
 
     const spec = shotSpec(object, shot, 'mask', SIZE);
     spec.ortho = orthoWindow;
+    // Level, whatever the shot's own elevation is: the node side rasterises a
+    // level orthographic window, and comparing that against a tilted render
+    // measures the tilt rather than the geometry.
+    spec.camera.elevation = 0;
     const url = await page.evaluate(
       (s) => (window as never as { renderShot: (s: ShotSpec) => string }).renderShot(s),
       spec as never,

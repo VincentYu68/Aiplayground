@@ -20,6 +20,7 @@ import {
   repairAssemblies,
 } from '../src/core/build/stability';
 import { buildSteps, orderPlacements } from '../src/core/build/steps';
+import { assertObjectFound, measureFidelity, MAX_MISSING_FRACTION } from '../src/core/build/fidelity';
 import { findPart, ALL_PARTS } from '../src/core/lego/catalog';
 import {
   COLOR_BY_LDRAW,
@@ -1364,8 +1365,17 @@ describe('regressions in what the model keeps and what it reports', () => {
     const dropped = generateModel([{ rgba, mask: withSpeck, width, height, azimuth: 0 }], options);
     const clean = generateModel([{ rgba, mask: alone, width, height, azimuth: 0 }], options);
 
+    // Stated as a comparison rather than against a fixed threshold. The old
+    // 0.99 was calibrated when the score was measured on the voxel grid and
+    // counted support struts as model area, which depressed every number by a
+    // few points; measured on the parts, with scaffolding excluded, a clean
+    // model scores exactly 1 and the speck costs half a point rather than two.
+    // What the test is actually about is that abandoning material is not free.
     expect(clean.fidelity.silhouetteIoU).toBeGreaterThan(0.99);
-    expect(dropped.fidelity.silhouetteIoU).toBeLessThan(0.99);
+    expect(dropped.fidelity.silhouetteIoU).toBeLessThan(clean.fidelity.silhouetteIoU);
+    // And it now shows up directly, which is the more useful signal of the two.
+    expect(dropped.fidelity.volume.missingFraction).toBeGreaterThan(0);
+    expect(clean.fidelity.volume.missingFraction).toBe(0);
   });
 });
 
@@ -1654,5 +1664,62 @@ describe('when the photos disagree', () => {
     expect(bad.viewConflict).not.toBeNull();
     expect(bad.viewConflict!.view).toBe(2);
     expect(bad.viewConflict!.sharePercent).toBeGreaterThan(60);
+  });
+});
+
+describe('the report describes the parts, not the grid they came from', () => {
+  // A 6x3x6 block, fully intended, with a palette of one colour.
+  const makeInput = (covered: number) => {
+    const grid = new VoxelGrid(6, 3, 6);
+    for (let y = 0; y < 3; y++)
+      for (let z = 0; z < 6; z++) for (let x = 0; x < 6; x++) grid.set(x, y, z, 0);
+    const n = grid.sx * grid.sy;
+    // `covered` 2x1x2 parts, laid along the bottom course, cover 4 cells each.
+    const placements = [];
+    let placed = 0;
+    for (let z = 0; z < 6 && placed < covered; z += 2)
+      for (let x = 0; x < 6 && placed < covered; x += 2, placed++)
+        placements.push({
+          partId: 'plate-2x2', code: '3022', w: 2, d: 2, height: 1 as const,
+          x, y: 0, z, color: 0,
+        });
+    return {
+      grid,
+      supportMask: new Uint8Array(grid.cells.length),
+      placements,
+      frontMask: new Uint8Array(n).fill(1),
+      frontColor: new Int16Array(n).fill(0),
+      frontLab: new Float32Array(n * 3),
+      silhouetteTotal: n,
+      palette: [{ rgb: [200, 0, 0] as [number, number, number], lab: [50, 60, 40] as [number, number, number] }],
+      meanDeltaEFromPalette: 0,
+    };
+  };
+
+  it('counts the volume the parts fail to deliver', () => {
+    // This is the defect that let a frame tiling down to one brick report a
+    // perfect silhouette: the score was taken from the grid, so nothing the
+    // tiler did to the grid was ever looked at.
+    const full = measureFidelity(makeInput(9));
+    expect(full.volume.built).toBe(36);
+    expect(full.volume.missingFraction).toBeCloseTo((108 - 36) / 108, 5);
+
+    const sparse = measureFidelity(makeInput(1));
+    expect(sparse.volume.built).toBe(4);
+    expect(sparse.volume.missing).toBeGreaterThan(full.volume.missing);
+  });
+
+  it('withholds the score when most of the shape was thrown away', () => {
+    const sparse = measureFidelity(makeInput(1));
+    expect(sparse.volume.missingFraction).toBeGreaterThan(MAX_MISSING_FRACTION);
+    expect(sparse.measured).toBe(false);
+    expect(sparse.issues.join(' ')).toContain('deleted');
+  });
+
+  it('refuses an empty model rather than scoring it', () => {
+    expect(() => assertObjectFound(new VoxelGrid(4, 4, 4))).toThrow(/No object found/);
+    const solid = new VoxelGrid(2, 2, 2);
+    solid.set(0, 0, 0, 0);
+    expect(() => assertObjectFound(solid)).not.toThrow();
   });
 });

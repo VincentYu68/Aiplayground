@@ -14,11 +14,11 @@ import { EMPTY, VoxelGrid } from '../voxel/grid';
 import { tileGrid } from './tiling';
 import { addSupports, analyseStability, repairAssemblies } from './stability';
 import { buildSteps } from './steps';
+import { assertObjectFound, measureFidelity } from './fidelity';
 import { buildPartsList, totalParts } from '../export/bom';
 import { modelDimensionsMM, platesForAspect } from '../lego/units';
 import { bounds } from '../image/raster';
-import { deltaE2000 } from '../lego/colors';
-import type { BuildOptions, BuildResult, FidelityReport } from '../../types';
+import type { BuildOptions, BuildResult } from '../../types';
 
 export type ProgressFn = (stage: string, fraction: number) => void;
 
@@ -220,6 +220,10 @@ export function generateModel(
     hollow(grid, SHELL_MM, 3, options.resolution === 'bricks');
   }
 
+  // Checked after cleanup rather than before it, so a cut-out that survives
+  // segmentation and is then eaten by the small-component pass fails here too.
+  assertObjectFound(grid);
+
   const supportMask = new Uint8Array(grid.cells.length);
   onProgress('Making everything reach the ground', 0.45);
   const groundedVoxels = groundComponents(grid, supportMask);
@@ -249,15 +253,21 @@ export function generateModel(
   const steps = buildSteps(placements, options.partsPerStep);
   const partsList = buildPartsList(placements);
 
-  const fidelity = measureFidelity(
+  // Measured on `placements`, not on `grid`: everything the tiler, the assembly
+  // repair and the support pass do happens after the grid, and measuring the
+  // grid made all of it invisible. A frame that tiles down to one 1x16 brick
+  // used to report a perfect silhouette over it.
+  const fidelity = measureFidelity({
     grid,
+    supportMask,
+    placements,
     frontMask,
     frontColor,
     frontLab,
     silhouetteTotal,
-    voxelResult.palette,
-    voxelResult.meanDeltaE,
-  );
+    palette: voxelResult.palette,
+    meanDeltaEFromPalette: voxelResult.meanDeltaE,
+  });
 
   onProgress('Done', 1);
 
@@ -335,93 +345,3 @@ function gridRestarts(grid: VoxelGrid): number {
   return 5;
 }
 
-/**
- * How close is the finished model to the photo?
- *
- * Silhouette agreement is measured as intersection-over-union between the
- * model's front projection and the segmented object. Colour error is the mean
- * CIEDE2000 between each source column and the brick colour that replaced it.
- * Both are reported to the user, because "as close as possible" is a claim that
- * should come with a number attached.
- *
- * The colour comparison uses the Lab value the voxeliser sampled for each
- * column, not a fresh lookup into the photo. Re-deriving it meant mapping grid
- * columns across the whole image while the grid had been sampled across the
- * object's bounding box, so any photo with margin around the object was scored
- * against the wrong pixels — and it was scored against the colour the column
- * *wanted*, not the colour the finished model ended up with there.
- */
-function measureFidelity(
-  grid: VoxelGrid,
-  frontMask: Uint8Array,
-  frontColor: Int16Array,
-  frontLab: Float32Array,
-  /** Silhouette area over the *untrimmed* grid, so material the model dropped still counts. */
-  silhouetteTotal: number,
-  palette: { rgb: [number, number, number]; lab: [number, number, number] }[],
-  meanDeltaEFromPalette: number,
-): FidelityReport {
-  const { sx, sy } = grid;
-
-  // Front projection of what actually got built.
-  const projected = new Uint8Array(sx * sy);
-  const builtColor = new Int16Array(sx * sy).fill(EMPTY);
-  const preview = new Uint8ClampedArray(sx * sy * 4);
-  for (let y = 0; y < sy; y++) {
-    for (let x = 0; x < sx; x++) {
-      let colorIndex = EMPTY;
-      for (let z = 0; z < grid.sz; z++) {
-        const v = grid.get(x, y, z);
-        if (v !== EMPTY) {
-          colorIndex = v;
-          break;
-        }
-      }
-      const i = y * sx + x;
-      // Preview rows run top-down like an image, grid rows run bottom-up.
-      const o = ((sy - 1 - y) * sx + x) * 4;
-      if (colorIndex === EMPTY) {
-        preview[o + 3] = 0;
-        continue;
-      }
-      projected[i] = 1;
-      builtColor[i] = colorIndex;
-      const rgb = palette[colorIndex]?.rgb ?? [128, 128, 128];
-      preview[o] = rgb[0];
-      preview[o + 1] = rgb[1];
-      preview[o + 2] = rgb[2];
-      preview[o + 3] = 255;
-    }
-  }
-
-  let intersection = 0;
-  let modelArea = 0;
-  for (let i = 0; i < projected.length; i++) {
-    if (projected[i]) modelArea++;
-    if (projected[i] && frontMask[i]) intersection++;
-  }
-  // Silhouette pixels outside the crop are, by construction, ones the model has
-  // nothing at: they belong in the union and never in the intersection.
-  const union = silhouetteTotal + modelArea - intersection;
-
-  // Colour error against the source, measured where the model has material.
-  let deltaSum = 0;
-  let deltaCount = 0;
-  for (let i = 0; i < projected.length; i++) {
-    // Only columns that both photographed as object and got built are
-    // comparable: elsewhere there is no pair of colours to take a distance
-    // between.
-    if (!projected[i] || frontColor[i] === EMPTY) continue;
-    const built = palette[builtColor[i]];
-    if (!built) continue;
-    const lab: [number, number, number] = [frontLab[i * 3], frontLab[i * 3 + 1], frontLab[i * 3 + 2]];
-    deltaSum += deltaE2000(lab, built.lab);
-    deltaCount++;
-  }
-
-  return {
-    silhouetteIoU: union > 0 ? intersection / union : 0,
-    meanDeltaE: deltaCount > 0 ? deltaSum / deltaCount : meanDeltaEFromPalette,
-    preview: { width: sx, height: sy, rgba: preview },
-  };
-}
