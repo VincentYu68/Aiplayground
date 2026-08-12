@@ -3,7 +3,7 @@
  *
  * ABS is a dense, slightly waxy plastic: no metal, a tight but not mirrored
  * specular lobe, and enough environment reflection that a flat face still shows
- * a gradient across it. roughness 0.28 lands there — lower turns bricks into
+ * a gradient across it. roughness 0.25 lands there — lower turns bricks into
  * chrome, higher and they go chalky and the chamfers stop reading.
  *
  * The materials also carry the cavity-occlusion lookup (see cavity.ts). It is
@@ -32,8 +32,8 @@ export function createCavityUniforms(): CavityUniforms {
     // same texel and flatten the whole model to one shade.
     aoVolumeInvSize: { value: new THREE.Vector3(1, 1, 1) },
     aoStrength: { value: 1.0 },
-    aoBias: { value: 0.24 },
-    aoRange: { value: 0.36 },
+    aoBias: { value: 0.22 },
+    aoRange: { value: 0.32 },
   };
 }
 
@@ -173,7 +173,7 @@ function outlineMaterial(): THREE.MeshBasicMaterial {
 export function createBrickMaterials(uniforms: CavityUniforms, cavityAO: boolean): BrickMaterials {
   const abs = () =>
     new THREE.MeshStandardMaterial({
-      roughness: 0.28,
+      roughness: 0.25,
       metalness: 0.0,
       envMapIntensity: 0.95,
     });

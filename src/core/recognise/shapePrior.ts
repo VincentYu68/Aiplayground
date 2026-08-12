@@ -17,6 +17,16 @@
  * invents, on a corpus of flat vector drawings. Both of those are gone, so the
  * figures below are proportions of real objects rather than a fit, and they are
  * stated as such: they are what a person would guess knowing only the noun.
+ *
+ * How much any of this is worth depends on the classifier being right, and on
+ * photographs it is right about two thirds of the time. Measured on the
+ * benchmark corpus: a mug is correctly called a body of revolution and a teddy
+ * bear correctly called rounded, but a car is called a "jigsaw puzzle" —
+ * archetype flat — confidently enough to clear `MIN_CONFIDENCE`. That single
+ * miss turned a 32x16-stud car into a 32x3-stud sheet. Nothing here can tell a
+ * good guess from a bad one, so `bracketByRelief` in the voxeliser limits how
+ * far `depthScale` may end up from what the depth map measured. Treat these
+ * numbers as a nudge that the evidence is allowed to overrule.
  */
 
 import type { Archetype, Recognition } from './recognise';

@@ -109,7 +109,7 @@ for (const c of cases) {
     solidMode: o.solidMode,
     wholeCourses: o.resolution === 'bricks',
   };
-  const plan = planGrid(mask, W, H, po, measured.reliefScale)!;
+  const plan = planGrid(mask, W, H, po, measured.reliefFraction)!;
   const halfDepthPx = (plan.gridZ / 2) * plan.pxPerStud;
 
   const field = depthFieldFromRelief(measured, mask, W, H, {

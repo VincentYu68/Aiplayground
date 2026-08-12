@@ -43,25 +43,29 @@ function studioScene(): THREE.Scene {
   // The cyclorama: a dim neutral shell so nothing renders against pure black.
   const shell = new THREE.Mesh(
     new THREE.SphereGeometry(14, 24, 16),
-    new THREE.MeshBasicMaterial({ color: radiance(0.07, 0.075, 0.085, 1), side: THREE.BackSide }),
+    new THREE.MeshBasicMaterial({ color: radiance(0.14, 0.145, 0.155, 1), side: THREE.BackSide }),
   );
   scene.add(shell);
 
   // A brighter upper hemisphere. Sky above, floor below, as in any real room.
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(13, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.42),
-    new THREE.MeshBasicMaterial({ color: radiance(0.26, 0.275, 0.30, 1), side: THREE.BackSide }),
+    new THREE.MeshBasicMaterial({ color: radiance(0.32, 0.335, 0.36, 1), side: THREE.BackSide }),
   );
   scene.add(sky);
 
   // Key softbox: large, close, high and a little to the left and front.
-  panel(radiance(1, 0.99, 0.97, 3.2), [-3.5, 8, 5], [11, 11]);
+  panel(radiance(1, 0.99, 0.97, 4.6), [-3.5, 8, 5], [11, 11]);
+  // A small hard source as well as the big soft one. The softbox alone gives a
+  // broad sheen and no edge: it takes something small and bright to put a line
+  // down a chamfer, which is most of what says "moulded plastic".
+  panel(radiance(1, 1, 1, 30), [5.5, 9, -1], [1.8, 1.8]);
   // Cool fill from the right, weak enough to shape without lighting the shot.
   panel(radiance(0.86, 0.9, 1, 0.7), [9, 2.5, 2.5], [10, 9]);
   // Rim strip behind: the highlight that separates the model from the backdrop.
   panel(radiance(1, 1, 1, 2.0), [-1, 5, -9], [12, 3]);
   // Bounce off the sweep, so undersides get a little light back.
-  panel(radiance(0.6, 0.61, 0.63, 0.55), [0, -6, 2], [16, 16]);
+  panel(radiance(0.78, 0.79, 0.81, 1.25), [0, -6, 2], [18, 18]);
 
   return scene;
 }
@@ -79,9 +83,14 @@ export function studioEnvironment(renderer: THREE.WebGLRenderer): THREE.Texture 
 }
 
 /**
- * The backdrop. A photographer's sweep is brightest a little above and behind
- * the subject and falls off to the corners; a flat fill reads as a UI panel
- * with a model floating on it, which is exactly the look being replaced.
+ * The backdrop: a light grey photographic sweep, brightest a little above and
+ * behind the subject and falling off to the corners.
+ *
+ * It was dark first, to sit quietly in the dark UI, and that was the wrong
+ * call — against a dark ground the palette lost its punch, the shadow on the
+ * baseplate had nothing to fall on, and the whole thing read as a 3D widget
+ * embedded in a page. Every LEGO product photograph is shot on a light sweep,
+ * and it turns out that is not a stylistic accident.
  */
 export function backdropTexture(): THREE.Texture {
   const size = 512;
@@ -91,16 +100,16 @@ export function backdropTexture(): THREE.Texture {
   const ctx = canvas.getContext('2d')!;
 
   const vertical = ctx.createLinearGradient(0, 0, 0, size);
-  vertical.addColorStop(0, '#5c646e');
-  vertical.addColorStop(0.55, '#464d56');
-  vertical.addColorStop(1, '#2b3037');
+  vertical.addColorStop(0, '#e9ecf0');
+  vertical.addColorStop(0.5, '#d3d8de');
+  vertical.addColorStop(1, '#aab0b8');
   ctx.fillStyle = vertical;
   ctx.fillRect(0, 0, size, size);
 
   const pool = ctx.createRadialGradient(size * 0.5, size * 0.44, 0, size * 0.5, size * 0.44, size * 0.62);
-  pool.addColorStop(0, 'rgba(255,255,255,0.18)');
-  pool.addColorStop(0.6, 'rgba(255,255,255,0.05)');
-  pool.addColorStop(1, 'rgba(0,0,0,0.12)');
+  pool.addColorStop(0, 'rgba(255,255,255,0.35)');
+  pool.addColorStop(0.6, 'rgba(255,255,255,0.08)');
+  pool.addColorStop(1, 'rgba(0,0,0,0.10)');
   ctx.fillStyle = pool;
   ctx.fillRect(0, 0, size, size);
 

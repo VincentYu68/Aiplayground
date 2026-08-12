@@ -117,10 +117,14 @@ async function shootOne(page, base, photo) {
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   });
-  // The finished model should be solid, not ghosted.
-  for (const box of await page.$$('.viewer-toggles input[type=checkbox]')) {
-    if (await box.isChecked()) await box.uncheck();
-  }
+  // The finished model should be solid, not ghosted. Clicked through the DOM
+  // rather than with `uncheck()`: these are styled toggles whose real input is
+  // visually hidden, so Playwright's actionability check waits for a pointer
+  // target that will never be there and eventually calls the whole object a
+  // failure. A direct click still fires React's onChange.
+  await page.$$eval('.viewer-toggles input[type=checkbox]', (boxes) => {
+    for (const box of boxes) if (box.checked) box.click();
+  });
   await page.waitForTimeout(1500);
 
   const shots = {};
@@ -131,7 +135,20 @@ async function shootOne(page, base, photo) {
       view,
     );
     await page.waitForTimeout(900);
-    const buffer = await page.locator('.viewer-canvas').screenshot();
+    // Generous, and retried once. There is no GPU here, so a three-thousand
+    // part model is rasterised in software and a single frame can take tens of
+    // seconds; the default timeout turns "slow" into "this object failed",
+    // which is the most misleading thing a harness can report.
+    let buffer;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        buffer = await page.locator('.viewer-canvas').screenshot({ timeout: 120000 });
+        break;
+      } catch (error) {
+        if (attempt >= 1) throw error;
+        await page.waitForTimeout(4000);
+      }
+    }
     shots[view] = `data:image/png;base64,${buffer.toString('base64')}`;
   }
   return { shots, summary: summary.split('|')[0] };

@@ -119,7 +119,10 @@ export class BrickScene {
     // and only rolls the highlights off, which keeps the flat faces honest and
     // still leaves headroom for a specular hit on a chamfer.
     this.renderer.toneMapping = THREE.NeutralToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    // Set by eye against the palette: at 1.0 a Light Bluish Gray baseplate
+    // rendered nearer white than grey, which is the tell that the studio is
+    // over-lit rather than that the colour is wrong.
+    this.renderer.toneMappingExposure = 0.82;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -158,7 +161,7 @@ export class BrickScene {
     // is diffuser-heavy for the same reason: it is what puts shade in the
     // cracks. The key is the only light that casts; a second set of shadows
     // from a fill is a thing you only ever see in renders.
-    this.key = new THREE.DirectionalLight(0xfff6ec, 0.8);
+    this.key = new THREE.DirectionalLight(0xfff6ec, 1.2);
     this.key.position.set(-300, 550, 360);
     this.key.castShadow = true;
     this.scene.add(this.key);
@@ -378,7 +381,7 @@ export class BrickScene {
     groundGeo.rotateX(-Math.PI / 2);
     const fade = groundFadeTexture();
     const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x3c424a,
+      color: 0xb9bfc6,
       roughness: 0.95,
       metalness: 0,
       alphaMap: fade,
@@ -542,7 +545,7 @@ export class BrickScene {
     const vFov = (this.camera.fov * Math.PI) / 180;
     const distForHeight = halfHeight / Math.tan(vFov / 2);
     const distForWidth = halfWidth / (Math.tan(vFov / 2) * Math.max(0.35, this.camera.aspect));
-    return Math.max(60, Math.max(distForHeight, distForWidth) * 1.28);
+    return Math.max(60, Math.max(distForHeight, distForWidth) * 1.14);
   }
 
   frameAll(): void {

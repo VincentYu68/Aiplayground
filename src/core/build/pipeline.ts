@@ -145,7 +145,7 @@ export function generateModel(
         primary.width,
         primary.height,
         planOptionsFrom(options),
-        measured.reliefScale,
+        measured.reliefFraction,
       );
       depth = depthFieldFromRelief(measured, primary.mask, primary.width, primary.height, {
         roundness: options.roundness,

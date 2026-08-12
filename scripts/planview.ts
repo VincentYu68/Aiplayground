@@ -60,7 +60,7 @@ const planOptions = {
   solidMode: options.solidMode,
   wholeCourses: options.resolution === 'bricks',
 };
-const plan = planGrid(mask, width, height, planOptions, measured.reliefScale);
+const plan = planGrid(mask, width, height, planOptions, measured.reliefFraction);
 if (!plan) throw new Error('no object in the mask');
 
 const depth = depthFieldFromRelief(measured, mask, width, height, {

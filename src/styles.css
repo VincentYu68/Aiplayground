@@ -667,7 +667,7 @@ input[type='range'] {
   overflow: hidden;
   /* Matches the studio sweep the renderer draws, so there is no dark flash
      between the panel appearing and the first frame landing. */
-  background: linear-gradient(180deg, #5c646e 0%, #464d56 55%, #2b3037 100%);
+  background: linear-gradient(180deg, #e9ecf0 0%, #d3d8de 50%, #aab0b8 100%);
 }
 
 .viewer-canvas canvas {

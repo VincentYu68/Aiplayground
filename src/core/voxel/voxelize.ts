@@ -152,6 +152,30 @@ export interface GridPlanOptions {
 }
 
 /**
+ * How far the class prior may disagree with the depth map about depth.
+ *
+ * A relative depth map cannot state an object's thickness — that needs the
+ * camera — so the prior is not replaced. But it can state whether the object has
+ * *any* depth structure, and that is enough to catch the two ways the prior goes
+ * badly wrong: calling a car flat, and calling a book solid.
+ *
+ * `fraction` is the share of the object's standout from its background that its
+ * own depth range uses up. The mapping below is anchored on one real
+ * measurement — the corpus car reads 0.33 and 0.50 across its two shots, and a
+ * car is about as deep as its short axis — which is thin evidence for a
+ * calibration constant and is why the prior is bracketed by it rather than
+ * replaced with it. Anything within a factor of 1.35 of the measurement is left
+ * exactly as the prior asked.
+ */
+const RELIEF_DISAGREEMENT = 1.35;
+
+function bracketByRelief(ratio: number, fraction: number | null): number {
+  if (fraction === null || !Number.isFinite(fraction)) return ratio;
+  const measured = Math.max(0.3, Math.min(1.1, 0.35 + 1.9 * fraction));
+  return Math.max(measured / RELIEF_DISAGREEMENT, Math.min(measured * RELIEF_DISAGREEMENT, ratio));
+}
+
+/**
  * How many studs deep the model should be, among other things.
  *
  * The depth used to be `studsWide * depthScale`, i.e. the model was as deep as
@@ -168,15 +192,18 @@ export interface GridPlanOptions {
  * "depth relative to the short axis" rather than to the width. For a square
  * object the two definitions agree, which is why the sphere case is unchanged.
  *
- * `reliefScale` is the one part of this that is measured rather than assumed,
- * and it only ever trims. See `reliefScaleFrom`.
+ * The class prior does not get the last word on the ratio, because it is a
+ * lookup from an ImageNet label and it is wrong often enough to matter. On the
+ * photorealistic car it fires "jigsaw puzzle" — archetype flat — confidently
+ * enough to clear its threshold, and a 32x16 car becomes a 32x3 sheet. So the
+ * depth map brackets it: see `bracketByRelief`.
  */
 export function planGrid(
   mask: Mask,
   width: number,
   height: number,
   options: GridPlanOptions,
-  reliefScale: number | null,
+  reliefFraction: number | null,
 ): GridPlan | null {
   const box = bounds(mask, width, height);
   if (!box) return null;
@@ -187,7 +214,7 @@ export function planGrid(
 
   // Y counts plates and X counts studs, and a plate is not a stud tall.
   const shortAxis = Math.min(gridX, gridY / PLATES_PER_STUD);
-  const ratio = Math.max(0.05, options.depthScale) * (reliefScale ?? 1);
+  const ratio = bracketByRelief(Math.max(0.05, options.depthScale), reliefFraction);
   // A body of revolution takes its depth from its own radius: the silhouette
   // width *is* the diameter, and no prior gets a say.
   const gridZ =
@@ -285,7 +312,7 @@ export function voxelize(
   // The same plan the depth field was closed against — same function, same
   // inputs, same answer. Passing it in would be tidier, but it would also make
   // it possible for a caller to hand over a plan that disagrees.
-  const plan = planGrid(mask, width, height, options, depth.reliefScale);
+  const plan = planGrid(mask, width, height, options, depth.reliefFraction);
   if (!plan) {
     return {
       grid: new VoxelGrid(1, 1, 1),

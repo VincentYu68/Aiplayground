@@ -52,12 +52,11 @@ export interface DepthField {
   front: Float32Array;
   back: Float32Array;
   /**
-   * Multiplier on the depth prior, measured from how much relief the depth map
-   * actually contains, or null when there was nothing to measure. 1 leaves the
-   * prior untouched; below 1 says the object is flatter than its proportions
-   * suggest. Deliberately a small correction — see `reliefScaleFrom`.
+   * How much of its standout from the background the object's own depth range
+   * uses up, or null when there was no usable background. See
+   * `reliefFractionFrom`; `planGrid` turns it into a depth extent.
    */
-  reliefScale: number | null;
+  reliefFraction: number | null;
   /**
    * The cross-section roundness actually used, after the measurement and the
    * class prior were blended. Reported so a wrong shape can be traced to the
@@ -206,23 +205,26 @@ function measuredRoundness(
 }
 
 /**
- * How much the depth prior should be trimmed, given how flat the depth map says
- * the object is.
+ * How much of its own standout from the background the object's depth map uses.
  *
  * Relative depth cannot be turned into a real depth without knowing the camera,
  * so this is not a measurement of the object's thickness and does not pretend to
  * be. What it can see is a ratio: the object's own disparity spread against how
  * far the object stands out from its background. A ball uses up much of that
- * gap, a poster on a wall almost none — and "this is flat" is exactly the case
- * a proportions-and-class-label prior gets most wrong.
+ * gap, a poster on a wall almost none.
  *
- * It is clamped hard and only ever trims, because the two ways it goes wrong
- * both inflate: a studio backdrop the network reads as *near* rather than far
- * collapses the denominator, and an object that fills the frame leaves no
- * background to compare against at all. Returns null when there is no usable
- * background, which is the honest answer rather than a confident 1.
+ * Measured on the photorealistic car in `bench/out/corpus`, this reads 0.33 and
+ * 0.50 on its two shots — its wheels really are proud of its doors and its
+ * greenhouse really is set back. That is what a solid object with structure
+ * looks like, and it is the number `planGrid` uses to decide whether a class
+ * label calling the object flat is to be believed.
+ *
+ * Returns null when there is no usable background, which is the honest answer
+ * rather than a confident number: an object that fills the frame has nothing to
+ * stand out from, and a studio sweep the network reads as *near* rather than far
+ * collapses the denominator.
  */
-function reliefScaleFrom(
+function reliefFractionFrom(
   relief: Float32Array,
   mask: Mask,
   objectSpread: number,
@@ -250,10 +252,7 @@ function reliefScaleFrom(
   // to mean anything. On a white sweep it often does not.
   if (!(contrast > 0) || objectSpread <= 0 || objectSpread > contrast) return null;
 
-  // Typical framing puts a compact object around a third of the way through
-  // its own standout, so that is the point where the prior is left alone.
-  const fraction = objectSpread / contrast;
-  return Math.max(0.7, Math.min(1, 0.55 + 1.35 * fraction));
+  return objectSpread / contrast;
 }
 
 /**
@@ -275,10 +274,80 @@ export interface ReliefMeasurement {
    * it rather than the mask itself.
    */
   inner: Mask;
-  /** Multiplier on the depth prior; see `reliefScaleFrom`. */
-  reliefScale: number | null;
+  /** See `reliefFractionFrom`. */
+  reliefFraction: number | null;
   /** The depth map had no range over the object: a plane facing the camera. */
   flat: boolean;
+}
+
+/**
+ * Take out the part of the depth map that is the object's pose rather than its
+ * shape, by fitting and subtracting a plane across it.
+ *
+ * Nobody photographs an object exactly square-on. At even a few degrees off, one
+ * end of it is genuinely further from the camera than the other, and the depth
+ * map says so — correctly. But that recession belongs to where the object was
+ * standing, not to what it is, and feeding it in as relief makes the model taper
+ * in *thickness* along its length: the corpus car, shot twelve degrees off
+ * side-on, came out as an oval in plan when its ground truth is a rectangle. It
+ * is the same failure as the original bug — a global property being read as
+ * shape — one more level down.
+ *
+ * A plane is exactly the right thing to remove, because a plane is what a tilted
+ * flat object produces. What is left is the surface's own relief: a sphere is
+ * symmetric and loses nothing, and a car keeps its proud wheels and its recessed
+ * greenhouse while losing the ramp along the body.
+ */
+function removePose(relief: Float32Array, inner: Mask, width: number): Float32Array {
+  // Normal equations for z = ax + by + c over the masked pixels. Three unknowns
+  // and tens of thousands of samples, so a direct solve is stable enough.
+  let n = 0;
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  let sxx = 0;
+  let syy = 0;
+  let sxy = 0;
+  let sxz = 0;
+  let syz = 0;
+  for (let i = 0; i < inner.length; i++) {
+    if (!inner[i]) continue;
+    const x = i % width;
+    const y = (i - x) / width;
+    const z = relief[i];
+    n++;
+    sx += x;
+    sy += y;
+    sz += z;
+    sxx += x * x;
+    syy += y * y;
+    sxy += x * y;
+    sxz += x * z;
+    syz += y * z;
+  }
+  if (n < 64) return relief;
+
+  // Centre so the system is well conditioned; the constant term then drops out.
+  const mx = sx / n;
+  const my = sy / n;
+  const mz = sz / n;
+  const cxx = sxx - n * mx * mx;
+  const cyy = syy - n * my * my;
+  const cxy = sxy - n * mx * my;
+  const cxz = sxz - n * mx * mz;
+  const cyz = syz - n * my * mz;
+  const det = cxx * cyy - cxy * cxy;
+  if (Math.abs(det) < 1e-9) return relief;
+  const a = (cxz * cyy - cyz * cxy) / det;
+  const b = (cyz * cxx - cxz * cxy) / det;
+
+  const out = new Float32Array(relief.length);
+  for (let i = 0; i < relief.length; i++) {
+    const x = i % width;
+    const y = (i - x) / width;
+    out[i] = relief[i] - (a * (x - mx) + b * (y - my));
+  }
+  return out;
 }
 
 /**
@@ -303,19 +372,33 @@ export function measureRelief(
   // carry the background's depth, not the object's — and since those are the
   // extremes of the range, they are exactly what a percentile would latch onto.
   const inner = erode(mask, width, height, Math.max(1, Math.round(Math.min(width, height) * 0.01)));
+
+  // How deep the object is comes from the *raw* map: how far it stands out from
+  // its background is a fact about the scene, and the pose is part of what makes
+  // an object stand out. What the object's surface is shaped like comes from the
+  // de-posed one. Two questions, two maps.
+  let rawCount = 0;
   const scratch = new Float32Array(n);
+  for (let i = 0; i < n; i++) if (inner[i]) scratch[rawCount++] = relief[i];
+  if (rawCount < 16) {
+    rawCount = 0;
+    for (let i = 0; i < n; i++) if (mask[i]) scratch[rawCount++] = relief[i];
+  }
+  if (rawCount === 0) return { elevation, inner, reliefFraction: null, flat: true };
+  const rawSpan =
+    percentile(scratch, rawCount, 0.98) - percentile(scratch, rawCount, 0.02);
+  const reliefFraction = reliefFractionFrom(relief, mask, rawSpan);
+
+  const shape = removePose(relief, inner, width);
   let count = 0;
-  for (let i = 0; i < n; i++) if (inner[i]) scratch[count++] = relief[i];
+  for (let i = 0; i < n; i++) if (inner[i]) scratch[count++] = shape[i];
   if (count < 16) {
     count = 0;
-    for (let i = 0; i < n; i++) if (mask[i]) scratch[count++] = relief[i];
+    for (let i = 0; i < n; i++) if (mask[i]) scratch[count++] = shape[i];
   }
-  if (count === 0) return { elevation, inner, reliefScale: null, flat: true };
-
   const lo = percentile(scratch, count, 0.02);
   const hi = percentile(scratch, count, 0.98);
   const span = hi - lo;
-  const reliefScale = reliefScaleFrom(relief, mask, span);
 
   // A depth map with no range at all is not a failed measurement, it is a
   // measurement of a plane: a surface that does not turn away from the camera
@@ -325,7 +408,7 @@ export function measureRelief(
   if (!flat) {
     for (let i = 0; i < n; i++) {
       if (!mask[i]) continue;
-      elevation[i] = Math.max(0, Math.min(1, (relief[i] - lo) / span));
+      elevation[i] = Math.max(0, Math.min(1, (shape[i] - lo) / span));
     }
   } else {
     for (let i = 0; i < n; i++) if (mask[i]) elevation[i] = 0.5;
@@ -345,7 +428,7 @@ export function measureRelief(
     if (!mask[i]) continue;
     smoothed[i] = denominator[i] > 1e-6 ? numerator[i] / denominator[i] : elevation[i];
   }
-  return { elevation: smoothed, inner, reliefScale, flat };
+  return { elevation: smoothed, inner, reliefFraction, flat };
 }
 
 /**
@@ -440,7 +523,7 @@ export function depthFieldFromRelief(
       back[i] /= max;
     }
   }
-  return { front, back, reliefScale: measurement.reliefScale, roundness };
+  return { front, back, reliefFraction: measurement.reliefFraction, roundness };
 }
 
 /**
@@ -528,9 +611,9 @@ export function estimateDepth(
       back[i] /= max;
     }
   }
-  // Nothing was measured, so there is nothing to correct the prior with, and
+  // Nothing was measured, so there is nothing to bracket the prior with, and
   // the bulge's cross-section is circular by construction.
-  return { front, back, reliefScale: null, roundness: 1 };
+  return { front, back, reliefFraction: null, roundness: 1 };
 }
 
 /**
