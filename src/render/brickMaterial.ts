@@ -78,7 +78,7 @@ function cavityChunk(): string {
     // map already owns direct occlusion — but a 0.9mm seam is finer than any
     // shadow map resolves, and without this the joints between parts stay lit
     // from the key and the model reads as one carved block.
-    reflectedLight.directDiffuse *= mix( 1.0, ambientOcclusion, 0.25 );
+    reflectedLight.directDiffuse *= mix( 1.0, ambientOcclusion, 0.32 );
 
     #if defined( USE_ENVMAP ) && defined( STANDARD )
       float dotNV = saturate( dot( geometryNormal, geometryViewDir ) );

@@ -99,7 +99,7 @@ export function studOnlyGeometry(quality: Quality): THREE.BufferGeometry {
  * bevel down the long side.
  */
 export function slabGeometry(width: number, height: number, depth: number): THREE.BufferGeometry {
-  const geo = chamferedBox(width, height, depth, 0.32);
+  const geo = chamferedBox(width, height, depth, 0.4);
   geo.translate(0, height / 2, 0);
   return geo;
 }

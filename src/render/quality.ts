@@ -37,7 +37,7 @@ const HIGH: Quality = {
   studSegments: 16,
   studChamferMM: 0.3,
   studFilletMM: 0.22,
-  bodyChamferMM: 0.32,
+  bodyChamferMM: 0.4,
   // 1024 rather than 2048: at the size a model occupies this is still well
   // under half a millimetre per texel, and the extra blur that comes with the
   // coarser map is closer to a softbox than a razor-sharp edge would be.
@@ -51,7 +51,7 @@ const MEDIUM: Quality = {
   studSegments: 10,
   studChamferMM: 0.3,
   studFilletMM: 0,
-  bodyChamferMM: 0.32,
+  bodyChamferMM: 0.4,
   shadowMapSize: 512,
   softShadows: false,
   cavityAO: true,
@@ -62,7 +62,7 @@ const LOW: Quality = {
   studSegments: 8,
   studChamferMM: 0,
   studFilletMM: 0,
-  bodyChamferMM: 0.32,
+  bodyChamferMM: 0.4,
   shadowMapSize: 0,
   softShadows: false,
   cavityAO: false,
