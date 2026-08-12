@@ -6,12 +6,29 @@
  */
 
 import { COLOR_BY_LDRAW } from '../lego/colors';
-import { ALL_PARTS } from '../lego/catalog';
+import { ALL_PARTS, type BaseplateChoice } from '../lego/catalog';
 import type { PartsListEntry, Placement } from '../../types';
 
 const PART_BY_ID = new Map(ALL_PARTS.map((p) => [p.id, p]));
 
-export function buildPartsList(placements: Placement[]): PartsListEntry[] {
+/**
+ * LDraw colour 7, Light Grey — what baseplates are actually sold in, and the
+ * colour the viewer draws the base as.
+ */
+const BASEPLATE_LDRAW_COLOR = 7;
+
+export function buildPartsList(
+  placements: Placement[],
+  /**
+   * The base the model is to be stood on, when one is recommended.
+   *
+   * The app used to name a baseplate in the stability panel and then leave it
+   * out of every export, so anyone who ordered the parts list got a model with
+   * nothing to build it on — and above 48 studs the recommendation vanished
+   * entirely. Advice you cannot act on is worse than no advice.
+   */
+  baseplate?: BaseplateChoice | null,
+): PartsListEntry[] {
   const counts = new Map<string, PartsListEntry>();
   for (const p of placements) {
     const key = `${p.partId}|${p.color}`;
@@ -33,9 +50,25 @@ export function buildPartsList(placements: Placement[]): PartsListEntry[] {
     });
   }
 
-  return [...counts.values()].sort(
+  const list = [...counts.values()].sort(
     (a, b) => b.count - a.count || a.name.localeCompare(b.name) || a.colorName.localeCompare(b.colorName),
   );
+
+  // Listed first rather than sorted in by quantity: it is the one part you have
+  // to have before you can place any of the others.
+  if (baseplate) {
+    const color = COLOR_BY_LDRAW.get(BASEPLATE_LDRAW_COLOR);
+    list.unshift({
+      partId: `baseplate-${baseplate.studs}x${baseplate.studs}`,
+      code: baseplate.code,
+      name: baseplate.name,
+      colorLdraw: BASEPLATE_LDRAW_COLOR,
+      colorName: color?.name ?? 'Light Grey',
+      colorHex: color?.hex ?? '#9BA19D',
+      count: baseplate.count,
+    });
+  }
+  return list;
 }
 
 export function partsListToCsv(entries: PartsListEntry[]): string {

@@ -207,6 +207,14 @@ export interface BuildResult {
   fidelity: FidelityReport;
   partsList: PartsListEntry[];
   totalParts: number;
+  /**
+   * The base the model needs, or null when it stands on its own.
+   *
+   * Non-null means it is already in `partsList` and in the LDraw export. The
+   * panel used to name a baseplate that appeared in neither, and said nothing
+   * at all above 48 studs.
+   */
+  baseplate: import('./core/lego/catalog').BaseplateChoice | null;
   dimensionsMM: { width: number; height: number; depth: number };
   /** How many photographs went into the shape. */
   viewsUsed: number;

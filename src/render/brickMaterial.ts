@@ -32,8 +32,8 @@ export function createCavityUniforms(): CavityUniforms {
     // same texel and flatten the whole model to one shade.
     aoVolumeInvSize: { value: new THREE.Vector3(1, 1, 1) },
     aoStrength: { value: 1.0 },
-    aoBias: { value: 0.28 },
-    aoRange: { value: 0.4 },
+    aoBias: { value: 0.24 },
+    aoRange: { value: 0.36 },
   };
 }
 
@@ -74,6 +74,11 @@ function cavityChunk(): string {
     float ambientOcclusion = 1.0 - aoStrength * smoothstep( aoBias, aoBias + aoRange, occ );
 
     reflectedLight.indirectDiffuse *= ambientOcclusion;
+    // A quarter of the same term on direct light. Not physical — the shadow
+    // map already owns direct occlusion — but a 0.9mm seam is finer than any
+    // shadow map resolves, and without this the joints between parts stay lit
+    // from the key and the model reads as one carved block.
+    reflectedLight.directDiffuse *= mix( 1.0, ambientOcclusion, 0.25 );
 
     #if defined( USE_ENVMAP ) && defined( STANDARD )
       float dotNV = saturate( dot( geometryNormal, geometryViewDir ) );
@@ -170,7 +175,7 @@ export function createBrickMaterials(uniforms: CavityUniforms, cavityAO: boolean
     new THREE.MeshStandardMaterial({
       roughness: 0.28,
       metalness: 0.0,
-      envMapIntensity: 0.6,
+      envMapIntensity: 0.95,
     });
 
   const placed = abs();

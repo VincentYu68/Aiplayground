@@ -16,6 +16,7 @@ import { addSupports, analyseStability, repairAssemblies } from './stability';
 import { buildSteps } from './steps';
 import { assertObjectFound, measureFidelity } from './fidelity';
 import { buildPartsList, totalParts } from '../export/bom';
+import { baseplateFor } from '../lego/catalog';
 import { modelDimensionsMM, platesForAspect } from '../lego/units';
 import { bounds } from '../image/raster';
 import type { BuildOptions, BuildResult } from '../../types';
@@ -251,7 +252,12 @@ export function generateModel(
 
   onProgress('Writing the manual', 0.9);
   const steps = buildSteps(placements, options.partsPerStep);
-  const partsList = buildPartsList(placements);
+  // A base counts as part of the model only when it does something. With more
+  // than one assembly it is what holds them in the same object, so it belongs
+  // in the parts list and the export; for a single grounded piece it is display
+  // furniture, and billing the user for scenery is not advice.
+  const baseplate = stability.assemblies > 1 ? baseplateFor(grid.sx, grid.sz) : null;
+  const partsList = buildPartsList(placements, baseplate);
 
   // Measured on `placements`, not on `grid`: everything the tiler, the assembly
   // repair and the support pass do happens after the grid, and measuring the
@@ -282,6 +288,7 @@ export function generateModel(
     fidelity,
     partsList,
     totalParts: totalParts(partsList),
+    baseplate,
     dimensionsMM: modelDimensionsMM(grid.sx, grid.sy, grid.sz),
     viewsUsed: views.length,
     geometry: multiView ? 'visual-hull' : 'extruded',

@@ -28,11 +28,9 @@ import { generateModel } from '../src/core/build/pipeline';
 import { DEFAULT_OPTIONS, type BuildResult } from '../src/types';
 import { CORPUS, type CorpusObject, type Shot } from './corpus/objects';
 import {
-  align,
   extentOf,
+  fit,
   makeLattice,
-  modelOccupancy,
-  shifted,
   silhouette,
   silhouetteIoU,
   truthExtent,
@@ -65,6 +63,8 @@ interface Row {
   depthRatio: number;
   widthRatio: number;
   parts: number;
+  /** Uniform scale the registration settled on; see `SCALES` in frame.ts. */
+  scale: number;
   /** What the pipeline itself claims, for comparison with what is true. */
   claimedIoU: number;
   failure: string | null;
@@ -124,9 +124,7 @@ async function scoreShot(object: CorpusObject, shot: Shot): Promise<Row> {
   );
 
   const truth = truthOccupancy(object.parts, shot.azimuth, lattice);
-  const model = modelOccupancy(result, lattice);
-  const alignment = align(truth, model);
-  const placed = shifted(model, alignment.offset);
+  const { alignment, scale, placed } = fit(truth, result, lattice);
 
   const views = VIEWS.map((v) =>
     silhouetteIoU(silhouette(truth, v.azimuth, v.elevation), silhouette(placed, v.azimuth, v.elevation)),
@@ -148,6 +146,7 @@ async function scoreShot(object: CorpusObject, shot: Shot): Promise<Row> {
     depthRatio: truthSize.depth > 0 ? modelSize.depth / truthSize.depth : 0,
     widthRatio: truthSize.width > 0 ? modelSize.width / truthSize.width : 0,
     parts: result.totalParts,
+    scale,
     claimedIoU: result.fidelity.silhouetteIoU,
     failure: null,
   };
@@ -207,12 +206,13 @@ function tsv(rows: Row[]): string {
     'missed',
     'invented',
     'parts',
+    'scale',
     'claimedFrontIoU',
     'failure',
   ].join('\t');
   const body = rows.map((r) =>
     r.failure
-      ? [r.object, r.shot, ...Array(11).fill(''), r.failure].join('\t')
+      ? [r.object, r.shot, ...Array(12).fill(''), r.failure].join('\t')
       : [
           r.object,
           r.shot,
@@ -225,6 +225,7 @@ function tsv(rows: Row[]): string {
           r.missed.toFixed(4),
           r.invented.toFixed(4),
           String(r.parts),
+          r.scale.toFixed(2),
           r.claimedIoU.toFixed(4),
           '',
         ].join('\t'),
@@ -286,6 +287,7 @@ async function main(): Promise<void> {
           depthRatio: 0,
           widthRatio: 0,
           parts: 0,
+          scale: 0,
           claimedIoU: 0,
           failure: String(error).split('\n')[0],
         });

@@ -21,7 +21,7 @@ import {
 } from '../src/core/build/stability';
 import { buildSteps, orderPlacements } from '../src/core/build/steps';
 import { assertObjectFound, measureFidelity, MAX_MISSING_FRACTION } from '../src/core/build/fidelity';
-import { findPart, ALL_PARTS } from '../src/core/lego/catalog';
+import { findPart, ALL_PARTS, baseplateFor } from '../src/core/lego/catalog';
 import {
   COLOR_BY_LDRAW,
   deltaE2000,
@@ -1721,5 +1721,46 @@ describe('the report describes the parts, not the grid they came from', () => {
     const solid = new VoxelGrid(2, 2, 2);
     solid.set(0, 0, 0, 0);
     expect(() => assertObjectFound(solid)).not.toThrow();
+  });
+});
+
+describe('the base you are told to buy is the base you are given', () => {
+  it('covers any footprint, tiling above the largest plate made', () => {
+    expect(baseplateFor(30, 30).code).toBe('3811');
+    expect(baseplateFor(30, 30).count).toBe(1);
+    // 48x48 is the largest baseplate LEGO makes; past it a builder tiles them,
+    // and the old code returned nothing at all.
+    const big = baseplateFor(96, 50);
+    expect(big.studs).toBe(48);
+    expect(big.across).toBe(2);
+    expect(big.deep).toBe(2);
+    expect(big.count).toBe(4);
+  });
+
+  it('puts the recommended base in the parts list', () => {
+    const parts = [
+      { partId: 'brick-2x4', code: '3001', w: 4, d: 2, height: 3 as const, x: 0, y: 0, z: 0, color: 4 },
+    ];
+    const plate = baseplateFor(32, 32);
+    const without = buildPartsList(parts);
+    const withBase = buildPartsList(parts, plate);
+    expect(without.some((e) => e.code === plate.code)).toBe(false);
+    // First, because nothing else can be placed until it is on the table.
+    expect(withBase[0].code).toBe(plate.code);
+    expect(withBase[0].count).toBe(plate.count);
+  });
+
+  it('puts it in the LDraw file too, as its own first step', () => {
+    const steps = buildSteps(
+      [{ partId: 'brick-2x4', code: '3001', w: 4, d: 2, height: 3 as const, x: 0, y: 0, z: 0, color: 4 }],
+      8,
+    );
+    const plate = baseplateFor(32, 32);
+    const ldr = toLdraw(steps, { baseplate: plate, gridX: 32, gridZ: 32 });
+    const lines = ldr.split('\n').filter((l) => l.startsWith('1 '));
+    expect(lines[0]).toContain(`${plate.code}.dat`);
+    // Centred on the model, sitting on the y = 0 plane the first course rests on.
+    expect(lines[0]).toBe(`1 7 ${16 * 20} 0 ${16 * 20} 1 0 0 0 1 0 0 0 1 ${plate.code}.dat`);
+    expect(ldr.indexOf('0 STEP')).toBeLessThan(ldr.indexOf('3001.dat'));
   });
 });

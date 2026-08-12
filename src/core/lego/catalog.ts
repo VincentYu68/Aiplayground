@@ -145,8 +145,35 @@ export const BASEPLATES: Array<{ studs: number; code: string; name: string }> = 
   { studs: 48, code: '4186', name: 'Baseplate 48 x 48' },
 ];
 
-/** Smallest catalogued baseplate that covers a footprint, if one does. */
-export function baseplateFor(studsX: number, studsZ: number) {
+/**
+ * What to stand the model on.
+ *
+ * The old version returned the smallest single plate that covered the model, or
+ * nothing at all above 48 studs — so the models that most needed a base were
+ * the ones told nothing about it, and the advice quietly vanished at exactly
+ * the size where a model stops being liftable in one piece. LEGO's largest
+ * baseplate is 48x48; beyond that a real builder tiles them, so that is what
+ * this says.
+ */
+export interface BaseplateChoice {
+  code: string;
+  name: string;
+  /** How many to buy. Above 48 studs the base is tiled from the largest plate. */
+  count: number;
+  /** Plates across each axis, so the UI can say "2 x 2 of them". */
+  across: number;
+  deep: number;
+  studs: number;
+}
+
+export function baseplateFor(studsX: number, studsZ: number): BaseplateChoice {
   const need = Math.max(studsX, studsZ);
-  return BASEPLATES.find((b) => b.studs >= need);
+  const single = BASEPLATES.find((b) => b.studs >= need);
+  if (single) {
+    return { ...single, count: 1, across: 1, deep: 1 };
+  }
+  const largest = BASEPLATES[BASEPLATES.length - 1];
+  const across = Math.ceil(studsX / largest.studs);
+  const deep = Math.ceil(studsZ / largest.studs);
+  return { ...largest, count: across * deep, across, deep };
 }

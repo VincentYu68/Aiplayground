@@ -150,9 +150,15 @@ export class BrickScene {
     this.backdrop = backdropTexture();
     this.scene.background = this.backdrop;
 
-    // A three-light studio. The key is the only one that casts: a second set of
-    // shadows from a fill is a thing you only ever see in renders.
-    this.key = new THREE.DirectionalLight(0xfff6ec, 1.15);
+    // A three-light studio, deliberately weighted towards the environment
+    // rather than the lamps. Cavity occlusion only touches indirect light — as
+    // it should, direct light is what the shadow map is for — so a scene lit
+    // mostly by a hard key has nothing for the occlusion to darken and the
+    // joints between parts stay as bright as the faces. Real LEGO photography
+    // is diffuser-heavy for the same reason: it is what puts shade in the
+    // cracks. The key is the only light that casts; a second set of shadows
+    // from a fill is a thing you only ever see in renders.
+    this.key = new THREE.DirectionalLight(0xfff6ec, 0.8);
     this.key.position.set(-300, 550, 360);
     this.key.castShadow = true;
     this.scene.add(this.key);
@@ -160,8 +166,8 @@ export class BrickScene {
     const fill = new THREE.DirectionalLight(0xdfe8ff, 0.24);
     fill.position.set(0.9, 0.35, 0.4);
     this.scene.add(fill);
-    const rim = new THREE.DirectionalLight(0xffffff, 0.4);
-    rim.position.set(-0.35, 0.5, -1);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.5);
+    rim.position.set(0.55, 0.45, -1);
     this.scene.add(rim);
 
     this.cavity.aoVolume.value = this.cavityFallback;

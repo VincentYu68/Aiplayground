@@ -299,6 +299,43 @@ export function align(truth: Occupancy, model: Occupancy): Alignment {
   return best;
 }
 
+/**
+ * Scales tried when registering the model, and why there are any.
+ *
+ * The pipeline's unit is the object's height *as it appears in the photograph*.
+ * A camera 11 degrees above the horizon — which is where a person actually
+ * stands — makes a car's outline taller than the car, because some of its depth
+ * projects into its height. The model is then built a few percent small relative
+ * to the real object, through no fault of the shape logic, and scoring against a
+ * truth measured in true heights would put a ceiling on the metric that no
+ * algorithm could ever reach.
+ *
+ * A *uniform* scale search removes that and nothing else. It cannot rescue a
+ * model that is three times too deep, because shrinking it to fit the depth
+ * would wreck the width and the height at the same time — which is exactly the
+ * property that makes this safe and makes per-axis normalisation cheating.
+ */
+const SCALES = [0.86, 0.9, 0.94, 0.98, 1.02, 1.06, 1.1, 1.14];
+
+export interface Fit {
+  alignment: Alignment;
+  scale: number;
+  placed: Occupancy;
+}
+
+/** Register the model against the truth over translation and uniform scale. */
+export function fit(truth: Occupancy, result: BuildResult, lattice: Lattice): Fit {
+  let best: Fit | null = null;
+  for (const scale of SCALES) {
+    const model = modelOccupancy(result, lattice, false, scale);
+    const alignment = align(truth, model);
+    if (!best || alignment.iou > best.alignment.iou) {
+      best = { alignment, scale, placed: shifted(model, alignment.offset) };
+    }
+  }
+  return best!;
+}
+
 export interface Silhouette {
   mask: Uint8Array;
   width: number;

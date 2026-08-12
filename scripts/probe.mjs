@@ -68,6 +68,9 @@ await waitForServer(base);
 
 const browser = await chromium.launch({ executablePath: findChromium() });
 const page = await browser.newPage({ viewport: { width: 1400, height: 950 } });
+// Several agents drive headless Chromium at once on this box; the default 30s
+// screenshot timeout is a statement about machine load, not about the page.
+page.setDefaultTimeout(180000);
 const noise = [];
 page.on('pageerror', (e) => noise.push(`[pageerror] ${e.message}`));
 page.on('console', (m) => {

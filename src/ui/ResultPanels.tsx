@@ -9,7 +9,6 @@ import { bufferToDataUrl, downloadText } from '../lib/loadImage';
 import { partsListToBricklinkXml, partsListToCsv } from '../core/export/bom';
 import { toLdraw } from '../core/export/ldraw';
 import { toPrintableManual } from '../core/export/manual';
-import { baseplateFor } from '../core/lego/catalog';
 import { MAX_MODEL_HEIGHT_MM, MAX_MODEL_PLATES, PLATE_MM, STUD_MM } from '../core/lego/units';
 import type { BuildResult } from '../types';
 import type { SourceImage } from '../lib/loadImage';
@@ -192,7 +191,7 @@ export function StabilityPanel({ result }: { result: BuildResult }) {
   const [showIssues, setShowIssues] = useState(false);
   const s = result.stability;
   const tone = s.score >= 85 ? 'good' : s.score >= 65 ? 'ok' : 'poor';
-  const plate = baseplateFor(result.gridX, result.gridZ);
+  const plate = result.baseplate;
 
   return (
     <section className="panel">
@@ -236,9 +235,12 @@ export function StabilityPanel({ result }: { result: BuildResult }) {
         )}
         {plate && (
           <li>
-            <span>Recommended base</span>
+            <span>Base needed</span>
             <b>
-              {plate.name} ({plate.code})
+              {plate.count > 1
+                ? `${plate.across} x ${plate.deep} ${plate.name} (${plate.code})`
+                : `${plate.name} (${plate.code})`}
+              <small> — in the parts list and the LDraw file</small>
             </b>
           </li>
         )}
@@ -314,7 +316,12 @@ export function ExportPanel({ result, name }: { result: BuildResult; name: strin
       <div className="export-grid">
         <button
           type="button"
-          onClick={() => downloadText(`${safe}.ldr`, toLdraw(result.steps, { modelName: name }))}
+          onClick={() => downloadText(`${safe}.ldr`, toLdraw(result.steps, {
+              modelName: name,
+              baseplate: result.baseplate,
+              gridX: result.gridX,
+              gridZ: result.gridZ,
+            }))}
         >
           LDraw model
           <em>Opens in Studio, LeoCAD, LDView — build steps included</em>
