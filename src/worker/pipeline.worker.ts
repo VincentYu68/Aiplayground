@@ -84,6 +84,8 @@ function pixelKey(rgba: Uint8ClampedArray, width: number, height: number): numbe
  * answer. So the build waits, and if the load failed it carries on without it.
  */
 let depthLoad: Promise<void> | null = null;
+/** Why the depth model is not being used, when it is not. */
+let depthFailure: string | null = null;
 
 async function reliefFor(
   rgba: Uint8ClampedArray,
@@ -110,9 +112,15 @@ async function reliefFor(
       depthMaps.delete(oldest);
     }
     return relief;
-  } catch {
+  } catch (error) {
     // A model that loaded but failed on this image is not worth losing the
-    // build over; the bulge still produces something.
+    // build over; the bulge still produces something. It is still said out
+    // loud, because the resulting shape is visibly worse.
+    depthFailure = error instanceof Error ? error.message : String(error);
+    post({
+      type: 'model-unavailable',
+      message: `The depth model failed on this photo, so the shape is guessed from the outline: ${depthFailure}`,
+    });
     return undefined;
   }
 }
@@ -274,7 +282,18 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
     );
     // Nothing awaits this here; the build path does, and an unhandled rejection
     // in a worker takes the whole worker down.
-    depthLoad.catch(() => {});
+    //
+    // It is reported rather than merely swallowed. Falling back to the bulge
+    // silently is how a car came out three studs deep with a 95% silhouette
+    // score next to it and nothing anywhere saying the depth model had not
+    // been used: the shape is much worse and every number still looks fine.
+    depthLoad.catch((error: unknown) => {
+      depthFailure = error instanceof Error ? error.message : String(error);
+      post({
+        type: 'model-unavailable',
+        message: `Depth model unavailable, so the shape is guessed from the outline instead of measured: ${depthFailure}`,
+      });
+    });
 
     loadSam(request.urls, (loaded) => {
       samLoaded = loaded;
