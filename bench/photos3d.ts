@@ -27,7 +27,6 @@ import { chromium } from 'playwright-core';
 import { CORPUS, shotSpec, type ShotSpec } from './corpus/objects';
 
 const OUT = resolve(process.env.CORPUS_OUT ?? 'bench/out/corpus');
-const PORT = Number(process.env.CORPUS_PORT ?? 5313);
 const SIZE = Number(process.env.CORPUS_SIZE ?? 512);
 
 function flag(name: string): boolean {
@@ -82,9 +81,13 @@ function serve(): Promise<{ base: string; close: () => void }> {
     response.end(body);
   });
   return new Promise((done) => {
-    server.listen(PORT, '127.0.0.1', () =>
-      done({ base: `http://127.0.0.1:${PORT}/render.html`, close: () => server.close() }),
-    );
+    // Port zero: the kernel picks a free one. Three agents share this tree and
+    // a hard-coded port turns "someone else is also benchmarking" into a crash.
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      done({ base: `http://127.0.0.1:${port}/render.html`, close: () => server.close() });
+    });
   });
 }
 

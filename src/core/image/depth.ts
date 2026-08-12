@@ -58,6 +58,12 @@ export interface DepthField {
    * suggest. Deliberately a small correction — see `reliefScaleFrom`.
    */
   reliefScale: number | null;
+  /**
+   * The cross-section roundness actually used, after the measurement and the
+   * class prior were blended. Reported so a wrong shape can be traced to the
+   * decision that caused it rather than guessed at.
+   */
+  roundness: number;
 }
 
 export interface ReliefOptions {
@@ -98,6 +104,20 @@ function percentile(values: Float32Array, count: number, p: number): number {
 }
 
 /**
+ * The band over which the surface rolls over the silhouette edge, in pixels.
+ *
+ * Tapering over more than the silhouette's own inradius would mean the object
+ * never reaches full thickness anywhere; at that point it is thinner than it is
+ * deep and a full circular roll-off is the right answer anyway.
+ */
+function closureBand(maxDist: number, halfDepthPx: number, roundness: number): number {
+  return Math.max(
+    1,
+    Math.min(maxDist, halfDepthPx * (0.15 + 0.85 * Math.max(0, Math.min(1, roundness)))),
+  );
+}
+
+/**
  * Half-thickness profile that closes the volume at the silhouette.
  *
  * At the outline of a smooth solid the surface is tangent to the line of sight,
@@ -119,28 +139,70 @@ function percentile(values: Float32Array, count: number, p: number): number {
  * down by `roundness` towards a slab's small fillet. For a sphere the half-depth
  * *is* `maxDist` and nothing changes, which is the sanity check.
  */
-function closureProfile(
-  dist: Float32Array,
-  maxDist: number,
-  mask: Mask,
-  roundness: number,
-  halfDepthPx: number,
-): Float32Array {
+function closureProfile(dist: Float32Array, mask: Mask, band: number): Float32Array {
   const profile = new Float32Array(dist.length);
-  if (maxDist <= 0) return profile;
-  // Tapering over more than the silhouette's own inradius would mean the object
-  // never reaches full thickness anywhere; at that point it is thinner than it
-  // is deep and a full circular roll-off is the right answer anyway.
-  const band = Math.max(
-    1,
-    Math.min(maxDist, halfDepthPx * (0.15 + 0.85 * Math.max(0, Math.min(1, roundness)))),
-  );
   for (let i = 0; i < dist.length; i++) {
     if (!mask[i]) continue;
     const t = Math.min(1, dist[i] / band);
     profile[i] = Math.sqrt(Math.max(0, 1 - (1 - t) * (1 - t)));
   }
   return profile;
+}
+
+/**
+ * How round the cross-section is, measured instead of looked up from a label.
+ *
+ * A convex solid and a slab differ in a way the depth map states outright: on a
+ * ball, the surface falls away from the camera as you approach the outline, and
+ * it does so along the circular cap the closure already models. On a box facing
+ * the camera the front face is planar, so its depth has nothing to do with how
+ * far a pixel is from the edge — whatever structure it has (a car's wheels and
+ * windows) is unrelated to the silhouette.
+ *
+ * So the statistic is simply the correlation between the measured elevation and
+ * the cap the object *would* have if it were round. A ball scores near 1, a flat
+ * face near 0, and — usefully — a featureless object whose depth map is mostly
+ * noise also scores near 0, because noise does not correlate with anything.
+ *
+ * It is computed over the eroded mask. The prediction bleeds outward across the
+ * outline, and that bleed is itself strongly correlated with distance-to-edge:
+ * left in, it would make every object look round.
+ */
+function measuredRoundness(
+  elevation: Float32Array,
+  inner: Mask,
+  dist: Float32Array,
+  band: number,
+): number | null {
+  let n = 0;
+  let sumA = 0;
+  let sumB = 0;
+  for (let i = 0; i < inner.length; i++) {
+    if (!inner[i]) continue;
+    const t = Math.min(1, dist[i] / band);
+    sumA += elevation[i];
+    sumB += Math.sqrt(Math.max(0, 1 - (1 - t) * (1 - t)));
+    n++;
+  }
+  if (n < 256) return null;
+  const meanA = sumA / n;
+  const meanB = sumB / n;
+  let vaa = 0;
+  let vbb = 0;
+  let vab = 0;
+  for (let i = 0; i < inner.length; i++) {
+    if (!inner[i]) continue;
+    const t = Math.min(1, dist[i] / band);
+    const a = elevation[i] - meanA;
+    const b = Math.sqrt(Math.max(0, 1 - (1 - t) * (1 - t))) - meanB;
+    vaa += a * a;
+    vbb += b * b;
+    vab += a * b;
+  }
+  // No variation in the template means the band covers the whole object and
+  // there is no cap to compare against.
+  if (vaa <= 1e-12 || vbb <= 1e-12) return null;
+  return Math.max(0, Math.min(1, vab / Math.sqrt(vaa * vbb)));
 }
 
 /**
@@ -207,6 +269,12 @@ function reliefScaleFrom(
 export interface ReliefMeasurement {
   /** Smoothed elevation toward the camera, 0..1 across the object. */
   elevation: Float32Array;
+  /**
+   * The mask minus the couple of pixels at its outline where the prediction has
+   * bled in from the background. Every statistic taken from the depth map uses
+   * it rather than the mask itself.
+   */
+  inner: Mask;
   /** Multiplier on the depth prior; see `reliefScaleFrom`. */
   reliefScale: number | null;
 }
@@ -240,7 +308,7 @@ export function measureRelief(
     count = 0;
     for (let i = 0; i < n; i++) if (mask[i]) scratch[count++] = relief[i];
   }
-  if (count === 0) return { elevation, reliefScale: null };
+  if (count === 0) return { elevation, inner, reliefScale: null };
 
   const lo = percentile(scratch, count, 0.02);
   const hi = percentile(scratch, count, 0.98);
@@ -256,7 +324,7 @@ export function measureRelief(
     for (let i = 0; i < n; i++) if (mask[i]) elevation[i] = 0.5;
   }
   const radius = Math.max(1, Math.round(Math.min(width, height) * smoothing));
-  return { elevation: boxBlur(elevation, width, height, radius, 2), reliefScale };
+  return { elevation: boxBlur(elevation, width, height, radius, 2), inner, reliefScale };
 }
 
 /**
@@ -290,7 +358,25 @@ export function depthFieldFromRelief(
   const dist = distanceTransform(mask, width, height);
   let maxDist = 0;
   for (let i = 0; i < n; i++) if (dist[i] > maxDist) maxDist = dist[i];
-  const profile = closureProfile(dist, maxDist, mask, options.roundness, options.halfDepthPx);
+
+  // How round the cross-section is, measured against the cap a round object
+  // would have, and only *then* blended with the class prior.
+  //
+  // The prior is the weaker of the two and deserves the smaller share. It is a
+  // lookup from an ImageNet label, and on real photographs that label clears its
+  // confidence threshold rarely enough that most objects are getting the neutral
+  // default rather than anything about themselves. The depth map, by contrast,
+  // is about this object in this photograph. It is a blend rather than a
+  // replacement only so that a user who reaches for the control still moves it.
+  const measured = measuredRoundness(
+    elevation,
+    measurement.inner,
+    dist,
+    closureBand(maxDist, options.halfDepthPx, 1),
+  );
+  const roundness =
+    measured === null ? options.roundness : 0.3 * options.roundness + 0.7 * measured;
+  const profile = closureProfile(dist, mask, closureBand(maxDist, options.halfDepthPx, roundness));
 
   // The relief redistributes depth rather than adding it, so it is measured
   // against the object's own middle — weighted by the profile so the tapering
@@ -330,7 +416,7 @@ export function depthFieldFromRelief(
       back[i] /= max;
     }
   }
-  return { front, back, reliefScale: measurement.reliefScale };
+  return { front, back, reliefScale: measurement.reliefScale, roundness };
 }
 
 /**
@@ -418,8 +504,9 @@ export function estimateDepth(
       back[i] /= max;
     }
   }
-  // Nothing was measured, so there is nothing to correct the prior with.
-  return { front, back, reliefScale: null };
+  // Nothing was measured, so there is nothing to correct the prior with, and
+  // the bulge's cross-section is circular by construction.
+  return { front, back, reliefScale: null, roundness: 1 };
 }
 
 /**

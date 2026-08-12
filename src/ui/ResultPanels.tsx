@@ -10,7 +10,7 @@ import { partsListToBricklinkXml, partsListToCsv } from '../core/export/bom';
 import { toLdraw } from '../core/export/ldraw';
 import { toPrintableManual } from '../core/export/manual';
 import { baseplateFor } from '../core/lego/catalog';
-import { PLATE_MM, STUD_MM } from '../core/lego/units';
+import { MAX_MODEL_HEIGHT_MM, MAX_MODEL_PLATES, PLATE_MM, STUD_MM } from '../core/lego/units';
 import type { BuildResult } from '../types';
 import type { SourceImage } from '../lib/loadImage';
 
@@ -29,11 +29,12 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
     [result],
   );
 
-  const iou = Math.round(result.fidelity.silhouetteIoU * 100);
-  const deltaE = result.fidelity.meanDeltaE;
+  const fidelity = result.fidelity;
+  const iou = Math.round(fidelity.silhouetteIoU * 100);
+  const deltaE = fidelity.meanDeltaE;
   const colourVerdict =
     deltaE < 5 ? 'very close' : deltaE < 10 ? 'close' : deltaE < 18 ? 'recognisable' : 'loose';
-  const shape = describeShape(result.viewsUsed);
+  const shape = describeShape(result.viewsUsed, result.depthSource);
 
   return (
     <section className="panel">
@@ -51,11 +52,20 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
       <dl className="metrics">
         <div>
           <dt>Silhouette match</dt>
-          <dd>{iou}%</dd>
+          <dd>{fidelity.measured ? `${iou}%` : 'Not measured'}</dd>
           <p>
-            Overlap between the model's outline and the object's, <em>in the photo
-            you framed</em>. It says nothing about the shape side-on — a flat slab
-            scores full marks here.
+            {fidelity.measured ? (
+              <>
+                Overlap between the model's outline and the object's, <em>in the photo
+                you framed</em>. It says nothing about the shape side-on — a flat slab
+                scores full marks here.
+              </>
+            ) : (
+              <>
+                Too much of the shape was lost on the way to bricks for this number
+                to describe what you are getting, so it is not quoted.
+              </>
+            )}
           </p>
         </div>
         <div>
@@ -63,6 +73,30 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
           <dd>{shape.headline}</dd>
           <p>{shape.detail}</p>
         </div>
+        <div>
+          <dt>Built vs. intended</dt>
+          <dd>
+            {Math.round((1 - fidelity.volume.missingFraction) * 100)}% of the volume
+          </dd>
+          <p>
+            How much of the shape survived being turned into parts. The outline above
+            is measured from the front; these are the same comparison from the side
+            ({Math.round(fidelity.agreement.side * 100)}%) and the top (
+            {Math.round(fidelity.agreement.top * 100)}%), which is where material goes
+            missing without the photo being able to show it.
+          </p>
+        </div>
+        {fidelity.support.parts > 0 && (
+          <div>
+            <dt>Scaffolding</dt>
+            <dd>{Math.round(fidelity.support.partShare * 100)}% of the parts</dd>
+            <p>
+              {fidelity.support.parts} parts hold up sections that would otherwise
+              float. They are not part of the object and are not counted in the
+              numbers above — but you do have to buy and place them.
+            </p>
+          </div>
+        )}
         <div>
           <dt>Colour error</dt>
           <dd>
@@ -94,8 +128,21 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
                   result.sizeLimited.used /
                   10,
               )}
-              cm tall, and thousands of parts. Height is capped at{' '}
-              {Math.round(result.dimensionsMM.height / 10)}cm.
+              cm tall, and thousands of parts. The height limit is{' '}
+              {Math.round(MAX_MODEL_HEIGHT_MM / 10)}cm.
+            </p>
+          </div>
+        )}
+        {result.gridY > MAX_MODEL_PLATES && (
+          <div>
+            <dt>Over the height limit</dt>
+            <dd>{Math.round(result.dimensionsMM.height / 10)}cm</dd>
+            <p>
+              This object is so much taller than it is wide that even at the narrowest
+              width worth building it comes out past the {Math.round(MAX_MODEL_HEIGHT_MM / 10)}cm
+              limit. Narrowing further would leave too few studs across to carry any of
+              the object's shape, so the model is tall rather than featureless — but it
+              is over the limit, not at it.
             </p>
           </div>
         )}
@@ -105,33 +152,39 @@ export function FidelityPanel({ result, source }: { result: BuildResult; source:
 }
 
 /**
- * What the geometry is actually worth.
+ * Where the depth came from.
  *
- * The silhouette number sits right next to this and routinely reads 97% while
- * the solid behind it is less than half right, because matching the outline of
- * the one photo you were given is not evidence about depth. The figures quoted
- * here are mean 3D IoU against known solids from bench/run3d.ts, so the panel
- * reports the shape's accuracy rather than implying it from the outline's.
+ * This panel used to quote mean 3D IoU figures — "roughly half the true
+ * volume", "about 71%" — against `bench/run3d.ts`. Both halves of that were
+ * wrong. The depth is no longer guessed from the silhouette, so the figures
+ * described an algorithm the app had stopped running; and the benchmark that
+ * produced them runs in node, where no depth map is attached, so it was
+ * measuring the fallback either way. Numbers with nothing behind them are worse
+ * than no numbers, because they are believed. They are gone until there is a
+ * benchmark of the path the user actually ran.
  */
-function describeShape(views: number): { headline: string; detail: string } {
-  if (views <= 1) {
+function describeShape(
+  views: number,
+  source: BuildResult['depthSource'],
+): { headline: string; detail: string } {
+  if (views > 1) {
     return {
-      headline: 'Guessed',
+      headline: `Carved from ${views} views`,
       detail:
-        'One photo cannot show depth, so the model assumes the object is about as deep as it is wide. Against known solids that recovers roughly half the true volume. A second photo from the side takes it to about 71%.',
+        'The shape is the part of the object every photo agrees on — real recovered geometry, not a guess. What silhouettes can never recover is a hollow nothing sees, like the inside of a mug, and the space trapped between parts that stick out.',
     };
   }
-  if (views === 2) {
+  if (source === 'measured') {
     return {
-      headline: 'Carved from 2 views',
+      headline: 'Measured from the photo',
       detail:
-        'The shape is the intersection of both outlines — a real solid, about 71% of the true volume on the benchmark. Two more angles take it to roughly 77%.',
+        'A depth model read the surface facing the camera, so relief the outline cannot show — a set-back windscreen, a protruding wheel — is really there. The far side is still inferred: nothing in one photograph can see it. A second photo from another angle replaces that inference with measurement.',
     };
   }
   return {
-    headline: `Carved from ${views} views`,
+    headline: 'Guessed',
     detail:
-      'About 77% of the true volume on the benchmark. What silhouettes can never recover is hollows nothing sees — the inside of a mug — and the space trapped between parts that stick out, like a spout and a handle.',
+      'The depth model is not loaded, so the shape is an inflated copy of the outline: thick in the middle, tapering at the edge. It will read correctly head-on and poorly from any other angle. Reload to fetch the model, or add a second photo.',
   };
 }
 

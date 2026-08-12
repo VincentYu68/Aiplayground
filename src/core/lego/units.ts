@@ -33,6 +33,19 @@ export const LDU_PER_PLATE = PLATE_MM / MM_PER_LDU; // 8
  * work out how many *plate layers* tall the model must be to keep the
  * object's proportions.
  */
+/**
+ * Tallest model worth building, in plate layers — a little under 39cm.
+ *
+ * Lives here rather than in the pipeline because the UI has to quote the cap,
+ * and quoting it from a second copy is how the panel came to say "Height is
+ * capped at 165cm" underneath a pencil that was 165cm tall. The cap is a fixed
+ * number; the model's height is not, and the two must not be confused.
+ */
+export const MAX_MODEL_PLATES = 120;
+
+/** The cap expressed as a height, for anything that has to say it out loud. */
+export const MAX_MODEL_HEIGHT_MM = MAX_MODEL_PLATES * PLATE_MM;
+
 export function platesForAspect(studsWide: number, imageWidth: number, imageHeight: number): number {
   const physicalWidth = studsWide * STUD_MM;
   const physicalHeight = (physicalWidth * imageHeight) / imageWidth;
