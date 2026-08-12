@@ -37,6 +37,13 @@ export default function App() {
   const [model, setModel] = useState<{
     state: 'loading' | 'ready' | 'unavailable';
     fraction: number;
+    /**
+     * Why, when a model did not load. Discarding it meant every failure showed
+     * the same sentence about the outliner, including a depth-model failure
+     * that has nothing to do with the outline -- so the page said the wrong
+     * thing about which half of the app had degraded.
+     */
+    reason?: string;
   }>({ state: 'loading', fraction: 0 });
   /** What the classifier thinks the object is, and the prior it implied. */
   const [recognised, setRecognised] = useState<{ label: string; confidence: number } | null>(null);
@@ -69,7 +76,7 @@ export default function App() {
       return;
     }
     if (message.type === 'model-unavailable') {
-      setModel({ state: 'unavailable', fraction: 0 });
+      setModel({ state: 'unavailable', fraction: 0, reason: message.message });
       return;
     }
 
@@ -482,8 +489,8 @@ export default function App() {
               )}
               {model.state === 'unavailable' && (
                 <p className="hint">
-                  Running on the built-in outliner: the recognition model could not be
-                  loaded. Drawing a box around the object helps it a lot.
+                  {model.reason ??
+                    'A model could not be loaded, so the app is running on its built-in fallbacks. Drawing a box around the object helps a lot.'}
                 </p>
               )}
             </section>

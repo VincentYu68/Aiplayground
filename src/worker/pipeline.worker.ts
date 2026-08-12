@@ -303,7 +303,9 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
       .catch((error) =>
         post({
           type: 'model-unavailable',
-          message: error instanceof Error ? error.message : String(error),
+          message: `Running on the built-in outliner: the cut-out model could not be loaded (${
+            error instanceof Error ? error.message : String(error)
+          }). Drawing a box around the object helps it a lot.`,
         }),
       );
     return;
