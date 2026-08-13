@@ -164,7 +164,7 @@ export interface GridPlanOptions {
  * to catch the two ways the prior goes badly wrong: calling a car flat, and
  * calling a book solid.
  */
-const RELIEF_DISAGREEMENT = 1.35;
+const RELIEF_DISAGREEMENT = 1.15;
 
 /**
  * Depth as a fraction of the short axis, from how much the surface curves.
@@ -182,14 +182,24 @@ const RELIEF_DISAGREEMENT = 1.35;
  * a book read 0.300 and a car 0.324; it could not tell a plate from a solid, and
  * a book 32 studs wide came out 32 studs deep.
  *
- * The curve is fitted to those seven and is frankly a fit to seven points: a
- * power law through "a teddy is about as deep as it is wide" at 0.22, with a
- * floor low enough that a sheet of paper is allowed to be a sheet of paper. It
- * is an honest interpolation between measured objects and nothing more, and the
- * exponent is the part to distrust first if something comes out wrong.
+ * The line through them is fitted against measured ground truth rather than
+ * guessed. `bench/shapebench.ts` reports model depth over true depth for every
+ * corpus shot, so the depth each object *wanted* is recoverable, and those are:
+ *
+ *   book 0.40  frame 0.26  gear 0.46  teddy 1.02  car 1.39  mug 1.23
+ *
+ * A first attempt used a power law and overshot hard the other way -- it put
+ * the corpus mean at 0.56, i.e. every model 44% too thin, having just finished
+ * fixing the opposite fault. Six points support a line and not much more, so a
+ * line is what this is.
+ *
+ * The bottle is deliberately not in the fit. At 0.115 it wants 1.13 while the
+ * gear at 0.104 wants 0.46, and no function of this number can separate them:
+ * one is a body of revolution and takes its depth from its own radius, which is
+ * revolve mode's job and not this one's.
  */
 function depthRatioFromRelief(fraction: number): number {
-  return Math.max(0.08, Math.min(1.1, Math.pow(fraction / 0.24, 1.6)));
+  return Math.max(0.25, Math.min(1.45, 0.30 + 3.5 * fraction));
 }
 
 function bracketByRelief(ratio: number, fraction: number | null): number {
