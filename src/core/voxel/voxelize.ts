@@ -14,7 +14,7 @@ import { bounds, type Mask } from '../image/raster';
 import { latheProfile, type DepthField } from '../image/depth';
 import { nearestEdgePixel } from '../image/wrap';
 import { nearestColorIndex } from '../lego/colors';
-import { selectPalette } from './quantize';
+import { selectPalette, SUPPLY_PENALTY } from './quantize';
 import { EMPTY, VoxelGrid } from './grid';
 import type { BackTreatment, SolidMode } from '../../types';
 
@@ -101,7 +101,11 @@ function colorForColumn(
     // Deterministic, stable per (course, colour): no RNG state to thread.
     const hash = Math.sin(course * 12.9898 + i * 78.233) * 43758.5453;
     const jitter = 1 + COURSE_COLOR_JITTER * (2 * (hash - Math.floor(hash)) - 1);
-    const score = delta * jitter;
+    // The same reluctance to spend a scarce colour that chose the palette has
+    // to apply when columns are assigned to it, or the penalty decides only
+    // which colours are on the list and never which ones get used: Light Aqua
+    // stayed at 19% of a white mug through a palette-level penalty alone.
+    const score = (delta + SUPPLY_PENALTY[palette[i].supply]) * jitter;
     if (score < bestScore) {
       bestScore = score;
       bestDelta = delta;

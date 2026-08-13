@@ -9,7 +9,38 @@
  * wrong for a 3D object seen up close, where it just reads as noise.
  */
 
-import { deltaE2000, nearestColorIndex, PALETTE, rgbToLab, type LegoColor } from '../lego/colors';
+import {
+  deltaE2000,
+  nearestColorIndex,
+  PALETTE,
+  rgbToLab,
+  type ColorSupply,
+  type LegoColor,
+} from '../lego/colors';
+
+/**
+ * What a scarce colour has to be worth, in CIEDE2000, before it is chosen.
+ *
+ * A colour that exists in a handful of small elements is not free: the tiler can
+ * only lay it in 1x1s and 1x2s, so choosing it costs part count as well as
+ * shopping trouble. The palette used to be picked on colour distance alone, and
+ * on the corpus mug that put 19% of a *white* mug into Light Aqua -- a pale
+ * green, marginally closer to one shaded sample than White was, and enough for
+ * the manual to instruct someone to "add these 11 parts, Light Aqua".
+ *
+ * A penalty rather than a ban, because banning scarce colours would take Light
+ * Nougat with it, and Light Nougat is 80% of the teddy with no core colour
+ * anywhere near it. Something scarce has to be clearly better, not marginally
+ * better.
+ */
+export const SUPPLY_PENALTY: Record<ColorSupply, number> = {
+  core: 0,
+  common: 0.6,
+  limited: 3,
+  // Never selectable: PALETTE already excludes these, and the entry is here so
+  // the record stays exhaustive if that ever changes.
+  retired: 1e6,
+};
 import { mulberry32 } from '../image/raster';
 
 export interface PaletteSelection {
@@ -110,7 +141,7 @@ export function selectPalette(
   for (let i = 0; i < sampleCount; i++) {
     const lab = [samples[i * 3], samples[i * 3 + 1], samples[i * 3 + 2]];
     for (let p = 0; p < PALETTE.length; p++) {
-      cost[i * PALETTE.length + p] = deltaE2000(lab, PALETTE[p].lab);
+      cost[i * PALETTE.length + p] = deltaE2000(lab, PALETTE[p].lab) + SUPPLY_PENALTY[PALETTE[p].supply];
     }
   }
 
