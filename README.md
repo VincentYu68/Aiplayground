@@ -9,14 +9,15 @@ server, no upload, and no API key.
 ```bash
 npm install
 npm run dev           # http://localhost:5173
-npm test              # 95 tests over the generator, the cut-out and the shape
+npm test              # 102 tests over the generator, the cut-out and the shape
 npm run build         # static site in dist/
 npm run build:single  # one self-contained page, dist-single/brickify.html
 ```
 
 `build:single` inlines the CSS and JS into a single HTML file for hosts that
-serve one page and block external requests. It cannot carry the 19MB
-segmentation model, so it falls back to GrabCut and says so in the UI. It sets `VITE_NO_WORKER=1`, which
+serve one page and block external requests. It cannot carry the weights — 19MB
+of segmentation model and 35MB of depth model — so it falls back to GrabCut for
+the cut-out and to a guessed shape for the depth, and says so in the UI. It sets `VITE_NO_WORKER=1`, which
 drops the web worker and runs the generator on the main thread instead — the
 page freezes for the fraction of a second the build takes, rather than staying
 responsive. Use the normal build anywhere a second file can be served.
@@ -26,10 +27,11 @@ responsive. Use the normal build anywhere a second file can be served.
 1. **Cuts the object out of each photo** with Segment Anything, running in the
    browser — see below. A brush and a bounding box are there for the photos it
    still gets wrong.
-2. **Lifts the silhouette into a solid.** Three modes: a rounded solid that
-   bulges front and back, a solid of revolution for anything turned on a lathe,
-   and a flat-backed relief. The far side is treated as unknown rather than
-   assumed — see below.
+2. **Measures the depth** with Depth Anything V2, also in the browser, and
+   closes the volume behind it. The surface facing the camera is real recovered
+   relief — a set-back windscreen, a protruding wheel — and the far side is
+   treated as unknown rather than assumed. With two or more photos the shape is
+   carved from the silhouettes instead, which is measurement on both sides.
 3. **Samples it onto the LEGO lattice** — 8mm across, 3.2mm per plate — and
    reduces the colours to a chosen number of real LEGO colours using CIEDE2000.
 4. **Chooses the bricks**, scoring every candidate placement for size, stud
@@ -42,10 +44,21 @@ responsive. Use the normal build anywhere a second file can be served.
 
 ## Constraints it respects
 
-**Only standard parts.** Bricks and plates from 1x1 up to 8x16, every one of
-them an ordinary System element that has been in production for decades. No
-slopes, tiles, brackets or SNOT parts. Exported LDraw files reference real
-element numbers, and the Bricklink export is a wanted list you can buy from.
+**Only parts a person can buy.** Bricks and plates from 1x1 up to 8x16, plus
+tiles for finished top surfaces and 45/33-degree slopes for diagonal edges —
+every one an ordinary System element in current production. No brackets, no
+SNOT, nothing that needs a technique to place.
+
+Availability is treated as a property of the element *and* the colour rather
+than an assumption: a 1x16 brick exists in a handful of colours and a 1x1 in
+nearly all, and the tiler is only offered combinations that are made. Retired
+colours cannot be chosen at all. This is hand-encoded catalogue knowledge with
+no Bricklink query behind it and is deliberately pessimistic — it is the reason
+the parts list stopped asking for Brick 1x16 in Very Light Bluish Gray, a colour
+discontinued around 2004.
+
+Exported LDraw files reference real element numbers, and the Bricklink export is
+a wanted list you can buy from.
 
 **It has to stand up.** Three separate properties are checked, and they are not
 the same thing:
@@ -230,45 +243,51 @@ colour models do not care about resolution.
 
 ## How good is the 3D, actually
 
-`bench/run3d.ts` renders known solids — sphere, box, cylinder, mug, chair,
-dumbbell, stair, torus, teapot, and then a person, a car, a bag and a flat
-drawing — from N angles using the pipeline's own projection convention, runs the
-real pipeline, and scores the *volume* it produces against the solid it came
-from.
+**Every number in this section that predates the depth model has been removed
+rather than updated.** They were measured on an algorithm the app no longer
+runs — depth invented from the silhouette's distance transform — against a
+corpus of flat vector drawings, by a benchmark that ran in node where no depth
+map was ever attached. Three independent reasons for the same conclusion: they
+did not describe the product. Re-deriving them is work that has not been done
+yet, and quoting them in the meantime is how this app came to report 98% over a
+model that was visibly a loaf.
 
-| photos | mean 3D IoU | what the app reports instead |
-|---|---|---|
-| 1 | 43.3% | 97.3% silhouette match |
-| 2 | 66.1% | 97.3% |
-| 4 | 70.6% | 97.2% |
-| 8 | 71.4% | 97.1% |
+What can be said today, from `bench/contactsheet.mjs` over the photorealistic
+corpus, single photo, measured against the solid that produced the picture:
 
-Those are lower than the figures this section used to quote (53.0 / 70.8 / 76.6
-/ 78.1) for a boring reason worth stating plainly: the corpus grew from nine
-solids to thirteen, and the four that were added — a person, a car, a bag and a
-flat drawing — are the hard ones. The old numbers were never re-measured against
-the bigger corpus, so the README quietly kept claiming the easier average. The
-per-solid figures quoted further down were not affected, and the sweeps below
-that are explicitly marked as measured on the original nine.
+| object | 3D IoU | depth vs. true | note |
+|---|---|---|---|
+| car | 65.3% | 0.74x | reads as a car from all four sides |
+| mug | 21.0% | 0.81x | shape right; it is hollow and the model is solid |
+| chair | 19.6% | 0.83x | the gaps between the legs fill in |
 
-That gap is the whole problem, and it is now stated in the UI rather than left
-to be discovered by orbiting the model: matching the outline of the one photo
-you framed is not evidence about depth. A flat slab scores 97% on silhouette.
+That is three of eight, chosen because they are the informative ones, and the
+spread is the point: an object whose depth is roughly its short axis comes out
+well, and an object defined by the holes through it does not. One photograph
+cannot see a gap between a front leg and a back leg, and closing the volume
+behind the silhouette fills it. Two photos carve it away properly.
 
-Three things came out of building this.
+The silhouette match the UI shows alongside is deliberately not the headline:
+it is measured from the front, and a flat slab scores 97% on it. The panel now
+says so, quotes the side and top agreement next to it, and says whether the
+depth was measured, carved from several photos, or guessed.
 
-**The single-view depth prior was wrong by a factor of two.** `depthScale`
-defaulted to 0.55 — peak thickness as a fraction of width — which made a sphere
-just over half as deep as it is wide. Measured across the original nine-solid
-corpus, mean 3D IoU runs 40.9% at 0.4, 43.8% at 0.55, 51.9% at 0.85 and 53.0% at
-1.0. The default is now 1.0: assume a roughly circular cross-section, "as deep as it is wide".
+**Depth was anchored to the wrong dimension.** `depthScale` meant thickness as
+a fraction of the photograph's *width*, so a model was always as deep as the
+picture was wide — and a car photographed side-on has "wide" equal to its
+length, so it was extruded into a cube. It is now a fraction of the object's
+**short visible axis**, which is a quantity that actually constrains depth:
+nothing much is deeper than its own smallest visible dimension. For an object
+photographed square-on the two definitions agree, which is why this only ever
+helps.
 
-**A cylinder and a box cast the same silhouette.** From one photograph they are
-the same rectangle, and no geometric rule can separate them — the change above
-buys 9 points by picking the better prior, not by learning anything. Rounded
-objects gain a lot (sphere 54.9% → 92.2%, cylinder 51.1% → 86.3%); boxy ones
-lose (box 62.6% → 36.6%). Only recognising the object could do better, which is
-what the next section is about.
+**A cylinder and a box cast the same silhouette**, and no geometric rule can
+separate them. This is the argument the old bulge could not answer and the
+depth map can: a box's visible face is flat and a cylinder's is not, and that
+is in the relief whether or not anything recognises the object. Depth and
+cross-section are also now separate numbers, because a suitcase is shallow *and*
+square while a ball is deep *and* round, and one `depthScale` could not say
+both.
 
 **Views should be spread over half a turn, not a whole one.** Under orthographic
 projection the silhouette at angle a and at a+180 are mirror images, so they
