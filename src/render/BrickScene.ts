@@ -18,7 +18,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { brickGeometry, slabGeometry, studOnlyGeometry } from './brickGeometry';
+import { partGeometry, slabGeometry, studOnlyGeometry } from './brickGeometry';
 import { buildCavityVolume, type CavityVolume } from './cavity';
 import {
   createBrickMaterials,
@@ -31,6 +31,7 @@ import {
 import { pickQuality, QUALITY, type Quality, type QualityTier } from './quality';
 import { backdropTexture, groundFadeTexture, studioEnvironment } from './studio';
 import { COLOR_BY_LDRAW } from '../core/lego/colors';
+import { partCells, PART_BY_ID, type PartDef, type SlopeFacing } from '../core/lego/catalog';
 import { PLATE_MM, STUD_MM } from '../core/lego/units';
 import type { BuildResult, Placement } from '../types';
 
@@ -38,6 +39,15 @@ interface Entry {
   placement: Placement;
   step: number;
   color: THREE.Color;
+}
+
+/** Everything that decides what one instanced mesh draws. */
+interface Shape {
+  part: PartDef;
+  w: number;
+  d: number;
+  facing: SlopeFacing;
+  studs: boolean;
 }
 
 interface Batch {
@@ -237,20 +247,30 @@ export class BrickScene {
     for (const s of result.steps) for (const p of s.placements) stepOf.set(p, s.index);
 
     const covered = coverage(result);
-    const grouped = new Map<string, Entry[]>();
+    // Batched by element and orientation, not by footprint: a tile has a
+    // plate's footprint and a slope has a brick's, so a footprint key drew
+    // every one of them as a studded box and made the two shapes that break a
+    // real build up at a glance invisible.
+    const grouped = new Map<string, { shape: Shape; entries: Entry[] }>();
     for (const p of result.placements) {
-      const studs = !studsBuried(p, covered, result);
-      const key = `${p.w}x${p.d}x${p.height}x${studs ? 1 : 0}`;
+      const part = partFor(p);
+      const facing: SlopeFacing = part.shape === 'slope' ? (p.facing ?? '+x') : '+x';
+      const studs = !studsBuried(p, part, facing, covered, result);
+      const shape: Shape = { part, w: p.w, d: p.d, facing, studs };
+      const key = `${part.id}|${p.w}x${p.d}|${facing}|${studs ? 1 : 0}`;
       const hex = COLOR_BY_LDRAW.get(p.color)?.hex ?? '#999999';
-      const entry: Entry = { placement: p, step: stepOf.get(p) ?? 0, color: new THREE.Color(hex) };
-      const arr = grouped.get(key);
-      if (arr) arr.push(entry);
-      else grouped.set(key, [entry]);
+      const color = new THREE.Color(hex);
+      moulding(color, p);
+      const entry: Entry = { placement: p, step: stepOf.get(p) ?? 0, color };
+      const group = grouped.get(key);
+      if (group) group.entries.push(entry);
+      else grouped.set(key, { shape, entries: [entry] });
     }
 
-    for (const [key, entries] of grouped) {
-      const [w, d, h, studs] = key.split('x').map(Number);
-      const geo = brickGeometry(w, d, h, this.quality, studs === 1);
+    for (const { shape, entries } of grouped.values()) {
+      const { part, w, d, facing, studs } = shape;
+      const h = part.height;
+      const geo = partGeometry(part, w, d, facing, this.quality, studs);
       const make = (mat: THREE.Material, shadows: boolean) => {
         const mesh = new THREE.InstancedMesh(geo, mat, entries.length);
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -687,13 +707,70 @@ function cell(x: number, y: number, z: number, result: BuildResult): number {
 /**
  * Every stud on this part sits under something. In a solid model that is most
  * of them, and each one costs ~90 triangles that never reach a pixel.
+ *
+ * Only the cells that carry a stud count: the cells a ramp has cut away have
+ * nothing on top to hide, so testing the whole footprint would have kept every
+ * slope's studs alive for the sake of a cell that never had one.
  */
-function studsBuried(p: Placement, covered: Set<number>, result: BuildResult): boolean {
+function studsBuried(
+  p: Placement,
+  part: PartDef,
+  facing: SlopeFacing,
+  covered: Set<number>,
+  result: BuildResult,
+): boolean {
+  if (part.studs === 0) return true;
   const above = p.y + p.height;
-  for (let z = p.z; z < p.z + p.d; z++)
-    for (let x = p.x; x < p.x + p.w; x++)
-      if (!covered.has(cell(x, above, z, result))) return false;
+  for (const c of partCells(part, p.w, p.d, facing))
+    if (c.stud && !covered.has(cell(p.x + c.dx, above, p.z + c.dz, result))) return false;
   return true;
+}
+
+/**
+ * The element this placement is, or a plain box of the right size.
+ *
+ * By id, never by footprint — that mistake is what made every tile render as a
+ * plate. The fallback is for a placement whose element is not in the catalogue
+ * at all: drawing it as a box is wrong in the details and far better than
+ * dropping a part out of the model without saying so.
+ */
+function partFor(p: Placement): PartDef {
+  const known = PART_BY_ID.get(p.partId);
+  if (known) return known;
+  return {
+    id: `unknown-${p.w}x${p.d}x${p.height}`,
+    code: p.code,
+    name: p.code,
+    a: Math.min(p.w, p.d),
+    b: Math.max(p.w, p.d),
+    height: p.height,
+    shape: 'brick',
+    studs: p.w * p.d,
+    supply: 'core',
+  };
+}
+
+/**
+ * Moulding variation: a fixed ±2% on each part's luminance.
+ *
+ * The palette itself is not touched — every part still renders its own
+ * catalogue colour — but two batches of the same colour never come out of the
+ * mould identical, and a wall built from one flat RGB value is the tell that
+ * this is a render. Two percent is under the threshold at which anyone would
+ * call it a different colour and well over the one at which a large same-colour
+ * area stops looking like a single painted surface.
+ *
+ * Keyed on the placement's own grid position so it is stable: a jitter that
+ * changed between frames, or between one step and the next, would shimmer.
+ */
+const MOULD_JITTER = 0.02;
+
+function moulding(color: THREE.Color, p: Placement): void {
+  let h = Math.imul(p.x + 1, 73856093) ^ Math.imul(p.y + 1, 19349663) ^ Math.imul(p.z + 1, 83492791);
+  h = Math.imul(h ^ (h >>> 15), 2246822507);
+  h = Math.imul(h ^ (h >>> 13), 3266489909);
+  h ^= h >>> 16;
+  color.multiplyScalar(1 + MOULD_JITTER * (((h >>> 0) / 0xffffffff) * 2 - 1));
 }
 
 function roundUpTo(value: number, step: number): number {

@@ -15,6 +15,7 @@
  */
 
 import * as THREE from 'three';
+import { partCells, PART_BY_ID } from '../core/lego/catalog';
 import { PLATE_MM, STUD_MM } from '../core/lego/units';
 import type { Placement } from '../types';
 
@@ -52,14 +53,30 @@ export function buildCavityVolume(
     for (let y = 0; y < PAD; y++) data.fill(255, at(0, y, z), at(0, y, z) + nx);
 
   for (const p of placements) {
-    const x0 = p.x * 2 + PAD;
-    const x1 = (p.x + p.w) * 2 + PAD;
-    const y0 = p.y + PAD;
-    const y1 = p.y + p.height + PAD;
-    const z0 = p.z * 2 + PAD;
-    const z1 = (p.z + p.d) * 2 + PAD;
-    for (let z = z0; z < z1; z++)
-      for (let y = y0; y < y1; y++) data.fill(255, at(x0, y, z), at(x1, y, z));
+    const part = PART_BY_ID.get(p.partId);
+    // Only a slope has cells that are not full, and asking the catalogue cell by
+    // cell for every part in a few-thousand-part model is a lot of allocation
+    // for an answer that is "all of it" nearly every time.
+    if (!part || part.shape !== 'slope') {
+      const y0 = p.y + PAD;
+      const y1 = p.y + p.height + PAD;
+      const x0 = p.x * 2 + PAD;
+      const x1 = (p.x + p.w) * 2 + PAD;
+      for (let z = p.z * 2 + PAD; z < (p.z + p.d) * 2 + PAD; z++)
+        for (let y = y0; y < y1; y++) data.fill(255, at(x0, y, z), at(x1, y, z));
+      continue;
+    }
+    // Under a ramp the cell is only part full, and filling it solid shades the
+    // open air beside the slope as though it were inside the model — which
+    // takes the light out of exactly the diagonal the slope was placed to show.
+    for (const c of partCells(part, p.w, p.d, p.facing ?? '+x')) {
+      const y0 = p.y + Math.round(c.bottom) + PAD;
+      const y1 = p.y + Math.round(c.top) + PAD;
+      const x0 = (p.x + c.dx) * 2 + PAD;
+      const x1 = x0 + 2;
+      for (let z = (p.z + c.dz) * 2 + PAD; z < (p.z + c.dz) * 2 + 2 + PAD; z++)
+        for (let y = y0; y < y1; y++) data.fill(255, at(x0, y, z), at(x1, y, z));
+    }
   }
 
   const scratch = new Uint8Array(data.length);
