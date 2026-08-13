@@ -301,6 +301,138 @@ function sampleColumn(
   };
 }
 
+/**
+ * How far a shaded column is pulled toward the lit value of its own material.
+ *
+ * Not 1: a real object does carry some soft variation, and flattening all of it
+ * makes a sphere read as a disc.
+ */
+const SHADING_REMOVAL = 0.85;
+
+/** sRGB to linear light, where shading is a plain multiplier. */
+function toLinear(v: number): number {
+  const u = v / 255;
+  return u <= 0.04045 ? u / 12.92 : Math.pow((u + 0.055) / 1.055, 2.4);
+}
+
+function fromLinear(v: number): number {
+  const u = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+  return Math.max(0, Math.min(255, u * 255));
+}
+
+/**
+ * Separate the object's colour from the light falling on it.
+ *
+ * What the camera recorded is albedo times illumination, and only the albedo is
+ * a property of the object. Quantising what the camera recorded spends the
+ * palette on the lighting: the corpus mug, which is white, came out 26% Light
+ * Bluish Gray, 26% Dark Bluish Gray and 21% White -- its lit side, its shaded
+ * side and its mid-tone, read as three materials and laid down as contour
+ * bands.
+ *
+ * The work happens in **linear light**, because that is the space shading is
+ * simple in: a dimmer light scales all three channels by the same factor. So
+ * chromaticity -- each channel over their sum -- is what survives shading, and
+ * intensity is what shading changes. Doing this in Lab instead, on a and b,
+ * looked reasonable and quietly failed on saturated colours: a shaded red loses
+ * saturation and reads as brown, far enough from lit red in a and b to be
+ * treated as a different material, so the dark red book kept its 21% Reddish
+ * Brown wedge and nothing improved.
+ *
+ * Two assumptions, both about light rather than about the object:
+ *
+ * **Illumination only darkens.** Nothing makes a surface brighter than its own
+ * colour except a specular highlight, so a material's *lit* intensity is the
+ * best estimate of its albedo and its shaded values are that same albedo minus
+ * light. Each column is pulled up toward a high percentile of its
+ * neighbourhood, never down. Pulling toward the neighbourhood *average* was the
+ * first attempt and it dragged the white mug body to grey, because the average
+ * included the dark blue band.
+ *
+ * **Chromaticity identifies the material.** It is what shading leaves alone, so
+ * it says which neighbours are the same stuff. Without that guard the blue band
+ * would set the reference for the white body beside it and the correction would
+ * paint a halo around the band.
+ *
+ * The neighbourhood is bounded rather than global, so two materials that happen
+ * to share a chromaticity -- a car's dark windows and its black wheels -- are
+ * not pooled merely because they are both neutral. They are never adjacent.
+ */
+function flattenShading(columns: ColumnSample[], gridX: number, gridY: number): void {
+  // Wide enough to span the lit-to-shaded falloff on one surface, narrow enough
+  // that separate parts of the object keep their own reference.
+  const radius = Math.max(3, Math.round(Math.min(gridX, gridY) * 0.35));
+  // Chromaticity runs 0..1 per channel and sums to 1, so this is a few percent
+  // of the gamut: enough to hold a material together through shading, tight
+  // enough to keep red away from blue.
+  const CHROMA_TOLERANCE = 0.06;
+  // Not the maximum: that is the specular highlight, which is not the albedo
+  // either and is often nothing like the object's colour.
+  const LIT_PERCENTILE = 0.8;
+
+  const n = gridX * gridY;
+  const cr = new Float32Array(n);
+  const cg = new Float32Array(n);
+  const intensity = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (!columns[i].filled) continue;
+    const r = toLinear(columns[i].r);
+    const g = toLinear(columns[i].g);
+    const b = toLinear(columns[i].b);
+    const sum = r + g + b;
+    intensity[i] = sum;
+    // A black column has no chromaticity to speak of; treat it as neutral
+    // rather than dividing by nearly nothing and getting noise.
+    cr[i] = sum > 1e-4 ? r / sum : 1 / 3;
+    cg[i] = sum > 1e-4 ? g / sum : 1 / 3;
+  }
+
+  const lit = new Float32Array(n);
+  const nearby: number[] = [];
+  for (let y = 0; y < gridY; y++) {
+    for (let x = 0; x < gridX; x++) {
+      const i = y * gridX + x;
+      if (!columns[i].filled) continue;
+      nearby.length = 0;
+      for (let dy = -radius; dy <= radius; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= gridY) continue;
+        for (let dx = -radius; dx <= radius; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= gridX) continue;
+          const j = yy * gridX + xx;
+          if (!columns[j].filled) continue;
+          const dr = cr[j] - cr[i];
+          const dg = cg[j] - cg[i];
+          if (Math.sqrt(dr * dr + dg * dg) > CHROMA_TOLERANCE) continue;
+          nearby.push(intensity[j]);
+        }
+      }
+      if (nearby.length === 0) {
+        lit[i] = intensity[i];
+        continue;
+      }
+      nearby.sort((m, o) => m - o);
+      lit[i] = nearby[Math.min(nearby.length - 1, Math.floor(nearby.length * LIT_PERCENTILE))];
+    }
+  }
+
+  for (let i = 0; i < n; i++) {
+    if (!columns[i].filled) continue;
+    // Only ever brighten: a column already above its neighbourhood's lit value
+    // is the highlight, and dragging it down would invent a shadow.
+    const target = Math.max(intensity[i], lit[i]);
+    const scaled = intensity[i] + SHADING_REMOVAL * (target - intensity[i]);
+    if (intensity[i] <= 1e-4) continue;
+    // Rescale intensity while holding chromaticity: the material keeps its
+    // colour and only the light on it changes.
+    const k = scaled / intensity[i];
+    columns[i].r = fromLinear(toLinear(columns[i].r) * k);
+    columns[i].g = fromLinear(toLinear(columns[i].g) * k);
+    columns[i].b = fromLinear(toLinear(columns[i].b) * k);
+  }
+}
+
 export function voxelize(
   rgba: Uint8ClampedArray,
   mask: Mask,
@@ -351,7 +483,15 @@ export function voxelize(
     }
   }
 
-  // --- pass 2: choose a palette from the columns that are actually used ----
+  // --- pass 2: recover the object's colour, then choose a palette from it ---
+  //
+  // What the camera saw is albedo times illumination, and only the albedo is a
+  // property of the object. Quantising what the camera saw spends the palette
+  // on the lighting: the corpus mug, which is white, came out 26% Light Bluish
+  // Gray, 26% Dark Bluish Gray and 21% White -- its lit and shaded sides, read
+  // as three different colours and laid down as contour bands.
+  flattenShading(columns, gridX, gridY);
+
   const labSamples = new Float32Array(gridX * gridY * 3);
   let sampleCount = 0;
   for (const c of columns) {
