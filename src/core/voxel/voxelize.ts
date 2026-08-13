@@ -154,24 +154,43 @@ export interface GridPlanOptions {
 /**
  * How far the class prior may disagree with the depth map about depth.
  *
- * A relative depth map cannot state an object's thickness — that needs the
- * camera — so the prior is not replaced. But it can state whether the object has
- * *any* depth structure, and that is enough to catch the two ways the prior goes
- * badly wrong: calling a car flat, and calling a book solid.
- *
- * `fraction` is the share of the object's standout from its background that its
- * own depth range uses up. The mapping below is anchored on one real
- * measurement — the corpus car reads 0.33 and 0.50 across its two shots, and a
- * car is about as deep as its short axis — which is thin evidence for a
- * calibration constant and is why the prior is bracketed by it rather than
- * replaced with it. Anything within a factor of 1.35 of the measurement is left
- * exactly as the prior asked.
+ * A relative depth map cannot state an object's thickness in millimetres --
+ * that needs the camera -- so the prior is not replaced outright. But it can
+ * state how much of the surface turns away from the camera, and that is enough
+ * to catch the two ways the prior goes badly wrong: calling a car flat, and
+ * calling a book solid.
  */
 const RELIEF_DISAGREEMENT = 1.35;
 
+/**
+ * Depth as a fraction of the short axis, from how much the surface curves.
+ *
+ * `fraction` is the range of the *de-posed* depth map -- the part left after a
+ * plane is fitted and subtracted -- over how far the object stands out from its
+ * background. Taking the plane out first is what makes the number mean
+ * thickness rather than tilt, and it is measured across the corpus as:
+ *
+ *   book 0.051   frame 0.054   gear 0.104   bottle 0.115
+ *   teddy 0.220  car 0.283     mug 0.444
+ *
+ * which is the flat objects, then the round ones, in the right order and with a
+ * real gap between them. The previous version of this measured the raw map, where
+ * a book read 0.300 and a car 0.324; it could not tell a plate from a solid, and
+ * a book 32 studs wide came out 32 studs deep.
+ *
+ * The curve is fitted to those seven and is frankly a fit to seven points: a
+ * power law through "a teddy is about as deep as it is wide" at 0.22, with a
+ * floor low enough that a sheet of paper is allowed to be a sheet of paper. It
+ * is an honest interpolation between measured objects and nothing more, and the
+ * exponent is the part to distrust first if something comes out wrong.
+ */
+function depthRatioFromRelief(fraction: number): number {
+  return Math.max(0.08, Math.min(1.1, Math.pow(fraction / 0.24, 1.6)));
+}
+
 function bracketByRelief(ratio: number, fraction: number | null): number {
   if (fraction === null || !Number.isFinite(fraction)) return ratio;
-  const measured = Math.max(0.3, Math.min(1.1, 0.35 + 1.9 * fraction));
+  const measured = depthRatioFromRelief(fraction);
   return Math.max(measured / RELIEF_DISAGREEMENT, Math.min(measured * RELIEF_DISAGREEMENT, ratio));
 }
 

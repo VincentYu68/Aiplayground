@@ -373,22 +373,20 @@ export function measureRelief(
   // extremes of the range, they are exactly what a percentile would latch onto.
   const inner = erode(mask, width, height, Math.max(1, Math.round(Math.min(width, height) * 0.01)));
 
-  // How deep the object is comes from the *raw* map: how far it stands out from
-  // its background is a fact about the scene, and the pose is part of what makes
-  // an object stand out. What the object's surface is shaped like comes from the
-  // de-posed one. Two questions, two maps.
-  let rawCount = 0;
+  // Both questions are answered from the *de-posed* map, and getting that wrong
+  // is what left flat objects as loaves.
+  //
+  // The raw range looks like the natural measure of how deep an object is, and
+  // it is not, because a tilt produces range without producing thickness. A book
+  // stood at an angle reads 0.300 on the raw map and a car reads 0.324: the
+  // number cannot tell a plate from a solid, so a book 32 studs wide came out 32
+  // studs deep. Take the plane out first and what is left is the part of the
+  // surface that actually turns away from the camera -- near zero for anything
+  // flat however it is posed, large for anything round.
+  //
+  // The contrast against the background still has to come from the raw map,
+  // because the de-posed map has no background left in it to compare against.
   const scratch = new Float32Array(n);
-  for (let i = 0; i < n; i++) if (inner[i]) scratch[rawCount++] = relief[i];
-  if (rawCount < 16) {
-    rawCount = 0;
-    for (let i = 0; i < n; i++) if (mask[i]) scratch[rawCount++] = relief[i];
-  }
-  if (rawCount === 0) return { elevation, inner, reliefFraction: null, flat: true };
-  const rawSpan =
-    percentile(scratch, rawCount, 0.98) - percentile(scratch, rawCount, 0.02);
-  const reliefFraction = reliefFractionFrom(relief, mask, rawSpan);
-
   const shape = removePose(relief, inner, width);
   let count = 0;
   for (let i = 0; i < n; i++) if (inner[i]) scratch[count++] = shape[i];
@@ -396,9 +394,11 @@ export function measureRelief(
     count = 0;
     for (let i = 0; i < n; i++) if (mask[i]) scratch[count++] = shape[i];
   }
+  if (count === 0) return { elevation, inner, reliefFraction: null, flat: true };
   const lo = percentile(scratch, count, 0.02);
   const hi = percentile(scratch, count, 0.98);
   const span = hi - lo;
+  const reliefFraction = reliefFractionFrom(relief, mask, span);
 
   // A depth map with no range at all is not a failed measurement, it is a
   // measurement of a plane: a surface that does not turn away from the camera
