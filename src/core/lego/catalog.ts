@@ -19,11 +19,24 @@
  *   a, b     footprint in studs, a <= b
  *   height   height in plate units — 1 for a plate or tile, 3 for a brick or slope
  *   studs    how many studs are moulded on the top face (0 for a tile)
- *   slope    present only on slopes: how far the ramp runs and how far it drops
+ *   supply   the narrowest colour tier the element is moulded in
+ *   slope    present only on slopes: the family, and the wedge cut out of it
  *
  * A placement additionally carries `facing`, because a 2x1 slope pointing east
- * and one pointing west are the same element in two orientations. See
- * `SlopeFacing` and `SLOPE_ROTATION_DEG`.
+ * and one pointing west are the same element in two orientations; `w` and `d`
+ * are always the footprint as laid on the grid and are never swapped to encode
+ * a direction. See `SlopeFacing` and `SLOPE_ROTATION_DEG`.
+ *
+ * Anything that needs to know what is in each *cell* of a placed part — which
+ * studs to draw, how full the cell is for a shading volume — should call
+ * `partCells` rather than re-deriving it. That is the one place the wedge is
+ * turned into per-cell geometry, so a renderer and an exporter cannot disagree
+ * about where a slope's material is.
+ *
+ * The element numbers are Bricklink's, which is also LDraw's. Three tiles carry
+ * a letter suffix (`3070b`, `3069b`, `3068b`) because a grooved and an ungrooved
+ * mould both exist and the grooved one is the part in production; anything
+ * validating an element id has to allow it.
  */
 
 import { PLATES_PER_BRICK } from './units';
@@ -45,8 +58,10 @@ export type PartShape = 'brick' | 'plate' | 'tile' | 'slope';
  * Which way a sloped face descends, in grid axes.
  *
  * '+x' means the ramp's high end is at the part's low-x edge and it falls away
- * towards increasing x. The catalogue models every slope in the '+x'
- * orientation; the other three are that geometry rotated about +Y.
+ * towards increasing x. Orientation lives here and only here: a placement's `w`
+ * and `d` are always the footprint as laid on the grid, never swapped to encode
+ * a direction, so a renderer or an exporter can size the box from `w` and `d`
+ * and turn it with `SLOPE_ROTATION_DEG`.
  */
 export type SlopeFacing = '+x' | '-x' | '+z' | '-z';
 
@@ -61,34 +76,48 @@ export const SLOPE_ROTATION_DEG: Record<SlopeFacing, number> = {
 /**
  * The wedge cut out of a slope, in grid units.
  *
- * A placement gives a box spanning `w` studs along X, `height` plates
- * vertically and `d` studs along Z, plus a `facing`. The ramp always runs along
- * the facing axis, over the `run` studs at the facing end, and the element's
- * long side (`b`) is always the one on that axis — so for '+x' or '-x' the
- * placed `w` is `b`, and for '+z' or '-z' the placed `d` is `b`.
+ * `run` and `rise` are the geometry and `angle` is the label: a stud is 8mm and
+ * a brick is 9.6mm, so LEGO's "45 degree" slope is really about 50, and 45 is
+ * the number on the box and in Bricklink's search. Anything drawing the part
+ * should measure it from `run` and `rise` and use `angle` only to tell one
+ * family from another.
  *
- * Taking '+x' as the example, with the box's own corner at the origin:
+ * `length` is the footprint along the ramp axis and is the first number in the
+ * element's name: LEGO's "Slope 45 2 x 4" is two studs deep with the ramp over
+ * one of them, and four studs wide. Getting that the wrong way round produces a
+ * parts list whose element numbers name a different shape from the one the
+ * model was built out of, which is worse than having no slopes at all.
+ *
+ * Taking '+x' as the example, with the placed box spanning `w` studs along X,
+ * `height` plates vertically and `d` studs along Z, corner at the origin. The
+ * ramp axis is X here, so `w === length` and `d` is the width:
  *
  *   - The part is full height over the first `w - run` studs of X.
- *   - Over the last `run` studs the top surface falls linearly from `height`
- *     plates down to `height - rise`. For every slope in this catalogue
- *     `rise === height`, so the ramp reaches the bottom face.
- *   - Studs sit on the flat part only, `(w - run) x d` of them, which is what
- *     `PartDef.studs` counts.
+ *   - Over the last `run` studs the top face falls linearly from `height` plates
+ *     down to `height - rise`.
+ *   - Studs sit on the flat part only — `(w - run) x d` of them.
  *   - `inverted` mirrors that vertically: the top stays flat and fully studded
  *     and it is the *underside* that rises from 0 to `rise` over the same run.
- *     That is what you put under an overhang.
+ *     That is what you put under an overhang, and it changes both which cells
+ *     hold material and where the studs are.
  *
- * '-x' is the same wedge with the high end at the high-x edge, and the two z
- * facings are the whole thing turned about +Y — see `SLOPE_ROTATION_DEG`.
+ * The other three facings are that geometry turned about +Y. Rather than
+ * re-deriving any of it, call `partCells`, which returns the per-cell stud
+ * flags and material extents for a part as placed.
  *
- * `angle` is the number LEGO puts in the part's name and is not derived from
- * run and rise — a stud is 8mm and a brick is 9.6mm, so the "45 degree" slope is
- * really about 50, and it is the name people search Bricklink for.
+ * Every slope in this catalogue is one brick tall with `rise === height`, so its
+ * ramp reaches the bottom face. The steeper families (65 and 75 degrees) are
+ * two and three bricks tall and cannot be described by `PartHeight`, which is
+ * why they are not here; a shallower one (18 degrees) would fit and would
+ * simply arrive as another entry with a longer `run`.
  */
 export interface SlopeGeometry {
   angle: number;
+  /** Footprint along the ramp axis, in studs. The placed `w` or `d` must match it. */
+  length: number;
+  /** Studs of that length the ramp covers, at the facing end. */
   run: number;
+  /** Plates the ramp descends over that run. */
   rise: number;
   inverted: boolean;
 }
@@ -209,17 +238,20 @@ const TILE_FOOTPRINTS: Array<[number, number, string, ColorSupply]> = [
  * the single biggest visual difference between a voxel dump and a designed
  * model, and the catalogue used to exclude these outright.
  *
- * `[a, b, code, angle, run, inverted, supply]` — footprint a x b studs, ramp
- * running `run` studs along the long axis. Every one of these is brick height.
+ * `[length, width, code, angle, run, inverted, supply]`, in the order the
+ * element's own name uses: `length` runs along the ramp and `width` across it,
+ * so the 45 degree family is two studs long in every width and the 33 degree
+ * family is three. Every one of these is brick height, and the ramp reaches the
+ * bottom face.
  */
 const SLOPE_SPECS: Array<[number, number, string, number, number, boolean, ColorSupply]> = [
-  [1, 2, '3040', 45, 1, false, 'limited'],
+  [2, 1, '3040', 45, 1, false, 'limited'],
   [2, 2, '3039', 45, 1, false, 'limited'],
   [2, 3, '3038', 45, 1, false, 'common'],
   [2, 4, '3037', 45, 1, false, 'common'],
-  [1, 3, '4286', 33, 2, false, 'common'],
-  [2, 3, '3298', 33, 2, false, 'common'],
-  [1, 2, '3665', 45, 1, true, 'limited'],
+  [3, 1, '4286', 33, 2, false, 'common'],
+  [3, 2, '3298', 33, 2, false, 'common'],
+  [2, 1, '3665', 45, 1, true, 'limited'],
   [2, 2, '3660', 45, 1, true, 'limited'],
 ];
 
@@ -243,21 +275,21 @@ function build(
 }
 
 function buildSlopes(): PartDef[] {
-  return SLOPE_SPECS.map(([a, b, code, angle, run, inverted, supply]) => ({
-    // Angle and inversion are both in the id because 3038 and 3298 share a 2x3
-    // footprint and differ only in how far the ramp runs.
-    id: `slope${inverted ? 'inv' : ''}${angle}-${a}x${b}`,
+  return SLOPE_SPECS.map(([length, width, code, angle, run, inverted, supply]) => ({
+    // Angle and inversion are both in the id because 3039 and 3660 share a
+    // footprint and 3038 and 3298 differ only in how far the ramp runs.
+    id: `slope${inverted ? 'inv' : ''}${angle}-${length}x${width}`,
     code,
-    name: `Slope ${inverted ? 'Inverted ' : ''}${angle} ${b} x ${a}`,
-    a,
-    b,
+    name: `Slope ${inverted ? 'Inverted ' : ''}${angle} ${length} x ${width}`,
+    a: Math.min(length, width),
+    b: Math.max(length, width),
     height: PLATES_PER_BRICK as PartHeight,
     shape: 'slope' as const,
     // The ramp eats the studs it passes under; an inverted slope keeps a full
     // flat top and cuts the underside instead.
-    studs: inverted ? a * b : (b - run) * a,
+    studs: inverted ? length * width : (length - run) * width,
     supply,
-    slope: { angle, run, rise: PLATES_PER_BRICK, inverted },
+    slope: { angle, length, run, rise: PLATES_PER_BRICK, inverted },
   }));
 }
 
@@ -268,6 +300,83 @@ export const SLOPES: PartDef[] = buildSlopes();
 export const ALL_PARTS: PartDef[] = [...BRICKS, ...PLATES, ...TILES, ...SLOPES];
 
 export const PART_BY_ID: ReadonlyMap<string, PartDef> = new Map(ALL_PARTS.map((p) => [p.id, p]));
+
+/**
+ * One stud position of a placed part, with what is actually there.
+ *
+ * Everything that draws or reasons about a part cell-by-cell should come
+ * through here rather than re-deriving the wedge from `SlopeGeometry`: the
+ * renderer needs to know which cells carry a stud, and the ambient-occlusion
+ * volume needs to know how full each cell is or it shades the space under a
+ * slope as though the slope were a solid brick.
+ */
+export interface PartCell {
+  /** Offset from the placement's own corner, in studs. */
+  dx: number;
+  dz: number;
+  /** A stud is moulded on top of this cell. */
+  stud: boolean;
+  /**
+   * Where the material is, in plates measured up from the part's bottom face.
+   * `bottom` is 0 and `top` is `height` everywhere except under a slope's ramp:
+   * an ordinary slope lowers `top`, an inverted one raises `bottom`.
+   *
+   * These are the cell's *mean* extents, which is what a voxel-resolution
+   * shading volume wants. The exact wedge is a straight line across the ramp
+   * and is described by `PartDef.slope`.
+   */
+  bottom: number;
+  top: number;
+  /** `(top - bottom) / height` — 1 for a solid cell, 0.5 under a 45 degree ramp. */
+  fill: number;
+}
+
+/**
+ * Describe a placed part cell by cell.
+ *
+ * `w` and `d` are the footprint as placed, never swapped; `facing` says which
+ * way a slope's ramp descends and is ignored for every other shape.
+ */
+export function partCells(
+  part: PartDef,
+  w: number,
+  d: number,
+  facing: SlopeFacing = '+x',
+): PartCell[] {
+  const cells: PartCell[] = [];
+  const ramp = part.shape === 'slope' ? part.slope : undefined;
+  const alongX = facing === '+x' || facing === '-x';
+  const ascending = facing === '+x' || facing === '+z';
+  // How many studs of the ramp axis the wedge covers, clamped so a malformed
+  // placement degrades to a plain box rather than producing negative material.
+  const span = alongX ? w : d;
+  const run = ramp ? Math.min(ramp.run, span) : 0;
+
+  for (let dz = 0; dz < d; dz++) {
+    for (let dx = 0; dx < w; dx++) {
+      let bottom = 0;
+      let top = part.height;
+      let stud = part.shape !== 'tile';
+
+      if (ramp && run > 0) {
+        const along = alongX ? dx : dz;
+        // Distance into the ramp, counting from its high end.
+        const step = ascending ? along - (span - run) : run - 1 - along;
+        if (step >= 0) {
+          const drop = (ramp.rise * (step + 0.5)) / run;
+          if (ramp.inverted) bottom = drop;
+          else top = part.height - drop;
+          // The ramp cuts the studs away with the material under them; an
+          // inverted slope keeps its flat top and every stud on it.
+          stud = ramp.inverted;
+        }
+      }
+
+      cells.push({ dx, dz, stud, bottom, top, fill: (top - bottom) / part.height });
+    }
+  }
+  return cells;
+}
 
 const byKey = new Map<string, PartDef>();
 for (const p of [...BRICKS, ...PLATES]) {

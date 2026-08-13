@@ -1341,49 +1341,59 @@ function applySlopes(
   colorSupply: ColorSupply[],
   colorOf: (ldraw: number) => number,
 ): void {
-  const filled = (i: number) => layer[i] !== EMPTY;
   const inside = (x: number, z: number) => x >= 0 && z >= 0 && x < sx && z < sz;
 
   for (let k = from; k < placements.length; k++) {
     const p = placements[k];
     if (p.height !== 3 || p.support) continue;
-    const long = Math.max(p.w, p.d);
-    const short = Math.min(p.w, p.d);
-    if (short > 2 || long < 2 || long > 4) continue;
-    if (short === 1 && long !== 2) continue;
+    const supply = colorSupply[colorOf(p.color)] ?? 'common';
 
     for (const [dx, dz, facing] of SLOPE_DIRS) {
-      // The element's ramp runs along its own long axis, so the step has to be
-      // off the long end.
-      if (dx !== 0 ? p.w !== long : p.d !== long) continue;
+      // The ramp runs along the direction of the step, so the footprint has to
+      // be the element's length that way and its width across.
+      const length = dx !== 0 ? p.w : p.d;
+      const width = dx !== 0 ? p.d : p.w;
+      const def =
+        PART_BY_ID.get(`slope45-${length}x${width}`) ??
+        PART_BY_ID.get(`slope33-${length}x${width}`);
+      if (!def?.slope || !supplySupports(supply, def.supply)) continue;
+      const run = def.slope.run;
 
-      const edge = dx > 0 || dz > 0 ? (dx !== 0 ? p.x + p.w : p.z + p.d) : (dx !== 0 ? p.x - 1 : p.z - 1);
-      const rampAt = dx > 0 || dz > 0 ? edge - 1 : edge + 1;
+      // First cell outside the part in this direction, and the first cell of
+      // the ramp inside it.
+      const forward = dx > 0 || dz > 0;
+      const edge = forward ? (dx !== 0 ? p.x + p.w : p.z + p.d) : (dx !== 0 ? p.x - 1 : p.z - 1);
+      const rampFrom = forward ? edge - run : edge + run;
 
       let ok = true;
-      for (let t = 0; t < short && ok; t++) {
-        const ax = dx !== 0 ? edge : p.x + t;
-        const az = dx !== 0 ? p.z + t : edge;
-        const rx = dx !== 0 ? rampAt : p.x + t;
-        const rz = dx !== 0 ? p.z + t : rampAt;
-        // Outside the course here...
-        if (!inside(ax, az) || filled(az * sx + ax)) ok = false;
-        // ...with the course below reaching exactly one stud past it.
-        else if (grid.get(ax, y0 - 1, az) === EMPTY) ok = false;
-        else if (
-          inside(ax + dx, az + dz) &&
-          grid.get(ax + dx, y0 - 1, az + dz) !== EMPTY
-        ) {
-          ok = false;
+      for (let t = 0; t < width && ok; t++) {
+        const across = (dx !== 0 ? p.z : p.x) + t;
+        const at = (along: number) =>
+          dx !== 0 ? { x: along, z: across } : { x: across, z: along };
+
+        // The course has to stop here...
+        for (let step = 0; step < run && ok; step++) {
+          const c = at(edge + (forward ? step : -step));
+          if (!inside(c.x, c.z) || layer[c.z * sx + c.x] !== EMPTY) ok = false;
+          // ...and the course below has to reach out exactly as far as the ramp
+          // descends. One stud per course is what a 45 degree slope is; two is
+          // what a 33 is. On a vertical wall there is no diagonal to smooth, and
+          // on a shallower curve the ramp would stand proud of the surface.
+          else if (grid.get(c.x, y0 - 1, c.z) === EMPTY) ok = false;
         }
-        // Nothing may rest on the ramp.
-        else if (aboveCourse && aboveCourse[rz * sx + rx] !== EMPTY) ok = false;
+        if (!ok) break;
+        const beyond = at(edge + (forward ? run : -run));
+        if (inside(beyond.x, beyond.z) && grid.get(beyond.x, y0 - 1, beyond.z) !== EMPTY) {
+          ok = false;
+          break;
+        }
+        // Nothing may rest on the ramp: it has no studs.
+        for (let step = 0; step < run && ok; step++) {
+          const c = at(rampFrom + (forward ? step : -step));
+          if (aboveCourse && aboveCourse[c.z * sx + c.x] !== EMPTY) ok = false;
+        }
       }
       if (!ok) continue;
-
-      const def = PART_BY_ID.get(`slope45-${short}x${long}`);
-      if (!def) continue;
-      if (!supplySupports(colorSupply[colorOf(p.color)] ?? 'common', def.supply)) continue;
 
       p.partId = def.id;
       p.code = def.code;
