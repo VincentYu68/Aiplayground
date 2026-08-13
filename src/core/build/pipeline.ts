@@ -17,7 +17,7 @@ import { buildSteps } from './steps';
 import { assertObjectFound, measureFidelity } from './fidelity';
 import { buildPartsList, totalParts } from '../export/bom';
 import { baseplateFor } from '../lego/catalog';
-import { modelDimensionsMM, platesForAspect } from '../lego/units';
+import { modelDimensionsMM, platesForAspect, PLATES_PER_STUD, PLATE_MM } from '../lego/units';
 import { bounds } from '../image/raster';
 import type { BuildOptions, BuildResult } from '../../types';
 
@@ -40,6 +40,13 @@ const SHELL_MM = 16;
 const MAX_PLATES = 120;
 
 /**
+ * How far past the cap a model may still be worth building.
+ *
+ * A quarter over is a tall model. Seven times over is a pole.
+ */
+const OVER_CAP_TOLERANCE = 1.25;
+
+/**
  * Reduce the width until the model's height is buildable.
  *
  * Both paths derive height from the width and the object's proportions, so
@@ -55,11 +62,27 @@ function fitToBuildableHeight(
   if (plates <= MAX_PLATES) return { options, requestedStudsWide: null };
 
   // Six studs is the floor: below that there is not enough width left to carry
-  // any of the object's shape. Something as extreme as a pencil therefore ends
-  // up over the cap, which is the right way round — it is better to be a little
-  // too tall than to be four studs of nothing.
+  // any of the object's shape. Something a little over the cap is the right way
+  // round — better slightly too tall than four studs of nothing.
   const scaled = Math.max(6, Math.floor(options.studsWide * (MAX_PLATES / plates)));
   if (scaled >= options.studsWide) return { options, requestedStudsWide: null };
+
+  // But "a little" has to mean something. At the floor an object thin enough
+  // will still be over the cap by any amount at all, and nothing downstream was
+  // checking: a pencil came out 2.9 metres and 1796 parts, a hairline 14.4
+  // metres and 6777 parts, both reported as perfectly stable models. Past the
+  // point where the answer is furniture rather than a model, saying so is the
+  // only useful thing left to do -- the object cannot be built at any width the
+  // slider offers, so there is no setting to suggest.
+  const atFloor = platesForAspect(scaled, box.width, box.height);
+  if (atFloor > MAX_PLATES * OVER_CAP_TOLERANCE) {
+    const metres = (atFloor * PLATE_MM) / 1000;
+    throw new Error(
+      `This object is ${Math.round(atFloor / (scaled * PLATES_PER_STUD))} times taller than it is wide. ` +
+        `Even at the narrowest width worth building it would come out ${metres.toFixed(1)}m tall. ` +
+        'Crop the photo closer to the part you want, or photograph it lying down.',
+    );
+  }
   return {
     options: { ...options, studsWide: scaled },
     requestedStudsWide: options.studsWide,
@@ -241,24 +264,6 @@ export function generateModel(
   const placements = [...tiling.placements];
   const repair = repairAssemblies(placements, dims);
   const supportsAdded = addSupports(placements, dims);
-  const stability = analyseStability({
-    placements,
-    dims,
-    seamAlignment: tiling.seamAlignment,
-    removedFragments: removedFragments + repair.removed,
-    supportsAdded: supportsAdded + groundedVoxels,
-    tiesRecoloured: repair.recoloured,
-  });
-
-  onProgress('Writing the manual', 0.9);
-  const steps = buildSteps(placements, options.partsPerStep);
-  // A base counts as part of the model only when it does something. With more
-  // than one assembly it is what holds them in the same object, so it belongs
-  // in the parts list and the export; for a single grounded piece it is display
-  // furniture, and billing the user for scenery is not advice.
-  const baseplate = stability.assemblies > 1 ? baseplateFor(grid.sx, grid.sz) : null;
-  const partsList = buildPartsList(placements, baseplate);
-
   // Measured on `placements`, not on `grid`: everything the tiler, the assembly
   // repair and the support pass do happens after the grid, and measuring the
   // grid made all of it invisible. A frame that tiles down to one 1x16 brick
@@ -274,6 +279,28 @@ export function generateModel(
     palette: voxelResult.palette,
     meanDeltaEFromPalette: voxelResult.meanDeltaE,
   });
+
+  const stability = analyseStability({
+    placements,
+    dims,
+    seamAlignment: tiling.seamAlignment,
+    removedFragments: removedFragments + repair.removed,
+    supportsAdded: supportsAdded + groundedVoxels,
+    tiesRecoloured: repair.recoloured,
+    // Measured before the score is worked out, so the score can be about the
+    // object rather than about whatever survived being turned into parts.
+    missingFraction: fidelity.volume.missingFraction,
+  });
+
+  onProgress('Writing the manual', 0.9);
+  const steps = buildSteps(placements, options.partsPerStep);
+  // A base counts as part of the model only when it does something. With more
+  // than one assembly it is what holds them in the same object, so it belongs
+  // in the parts list and the export; for a single grounded piece it is display
+  // furniture, and billing the user for scenery is not advice.
+  const baseplate = stability.assemblies > 1 ? baseplateFor(grid.sx, grid.sz) : null;
+  const partsList = buildPartsList(placements, baseplate);
+
 
   onProgress('Done', 1);
 

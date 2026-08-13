@@ -19,6 +19,7 @@
  */
 
 import { findPart, PART_BY_ID } from '../lego/catalog';
+import { MAX_MISSING_FRACTION } from './fidelity';
 import { COLOR_BY_LDRAW, deltaE2000 } from '../lego/colors';
 import type { Placement, StabilityIssue, StabilityReport } from '../../types';
 
@@ -727,6 +728,17 @@ export interface AnalyseInput {
   removedFragments: number;
   supportsAdded: number;
   tiesRecoloured: number;
+  /**
+   * Share of the intended volume that never became parts.
+   *
+   * Without it the score is about whatever survived rather than about the
+   * object: a frame that tiled down to a single brick, a pencil 1.65m tall and
+   * a slab cropped by the frame edge all scored 100/100 with no issues, because
+   * one brick has nothing floating, nothing weakly joined and a perfect bond.
+   * Every structural term here is a ratio over the parts that exist, so a model
+   * with almost no parts left cannot fail any of them.
+   */
+  missingFraction?: number;
 }
 
 export function analyseStability(input: AnalyseInput): StabilityReport {
@@ -831,6 +843,18 @@ export function analyseStability(input: AnalyseInput): StabilityReport {
   const bondExcess = Math.max(0, Math.min(1, (seamAlignment - 0.25) / 0.45));
 
   let score = 100;
+  // What was thrown away counts against the model, and hard. Losing a fifth of
+  // the object is not a blemish on an otherwise sound build; it is a different
+  // build, and the fidelity report already refuses to quote a silhouette score
+  // past 2%.
+  const missing = Math.max(0, Math.min(1, input.missingFraction ?? 0));
+  score -= 90 * missing;
+  if (missing > MAX_MISSING_FRACTION) {
+    issues.push({
+      kind: 'floating',
+      message: `${Math.round(missing * 100)}% of the shape could not be built out of parts that hold together, so what is scored here is not the model that was measured.`,
+    });
+  }
   score -= 45 * floatingFraction;
   score -= 25 * bondExcess;
   score -= 20 * weakFraction;
