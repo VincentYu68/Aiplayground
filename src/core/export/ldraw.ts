@@ -12,15 +12,38 @@
  */
 
 import { LDU_PER_PLATE, LDU_PER_STUD } from '../lego/units';
-import { findPart, type BaseplateChoice } from '../lego/catalog';
+import { findPart, type BaseplateChoice, PART_BY_ID, type SlopeFacing } from '../lego/catalog';
 import type { BuildStep, Placement } from '../../types';
 
 /** Identity, and a quarter turn about the vertical axis. */
 const IDENTITY = '1 0 0 0 1 0 0 0 1';
 const ROT_Y90 = '0 0 1 0 1 0 -1 0 0';
+const ROT_Y180 = '-1 0 0 0 1 0 0 0 -1';
+const ROT_Y270 = '0 0 -1 0 1 0 1 0 0';
+
+/**
+ * Rotation for each direction a slope descends toward.
+ *
+ * Anchored on LDraw's own convention for 3040: the ramp descends toward -Z at
+ * the identity orientation, and LDraw's Y points down, so its -Z is the
+ * grid's +z once the model is stood up. **This mapping is unverified against
+ * LDView** -- nobody here has opened a slope in a viewer -- so if slopes come
+ * out facing the wrong way in a real editor, this table is the thing to turn,
+ * and turning it cannot break anything else.
+ */
+const SLOPE_MATRIX: Record<SlopeFacing, string> = {
+  '+z': IDENTITY,
+  '-x': ROT_Y90,
+  '-z': ROT_Y180,
+  '+x': ROT_Y270,
+};
 
 function lineFor(p: Placement): string | null {
-  const part = findPart(p.w, p.d, p.height);
+  // By id, not by footprint. A tile has a plate's height and a slope has a
+  // brick's, so looking them up by (w, d, height) silently exported every tile
+  // as 3023 and every slope as 3004: the parts list said one thing and the
+  // file the user opens said another.
+  const part = PART_BY_ID.get(p.partId) ?? findPart(p.w, p.d, p.height);
   if (!part) return null;
 
   const x = (p.x + p.w / 2) * LDU_PER_STUD;
@@ -28,8 +51,16 @@ function lineFor(p: Placement): string | null {
   // Y is down and part origins are at the bottom face.
   const y = -(p.y * LDU_PER_PLATE);
 
-  // Catalogue parts are modelled with their long side along X.
-  const matrix = p.w === part.b || part.a === part.b ? IDENTITY : ROT_Y90;
+  // A slope's orientation is carried by `facing` and never by the footprint, so
+  // it rotates about Y by its own angle. Everything else is a rectangle:
+  // catalogue parts are modelled with their long side along X, so a part laid
+  // the other way round is the same element turned ninety degrees.
+  const matrix =
+    part.shape === 'slope' && p.facing
+      ? SLOPE_MATRIX[p.facing]
+      : p.w === part.b || part.a === part.b
+        ? IDENTITY
+        : ROT_Y90;
 
   return `1 ${p.color} ${x} ${y} ${z} ${matrix} ${part.code}.dat`;
 }

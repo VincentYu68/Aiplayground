@@ -1575,7 +1575,10 @@ describe('the things you take away with you', () => {
     expect(colours.length).toBe(result.partsList.length);
     for (const c of colours) expect(c).toBeGreaterThan(0);
     for (const id of [...xml.matchAll(/<ITEMID>([^<]+)<\/ITEMID>/g)].map((m) => m[1])) {
-      expect(id).toMatch(/^\d+$/);
+      // Tiles carry a letter: 3070b, 3069b, 3068b are the current moulds and
+      // are what Bricklink calls them. A digits-only rule passed only for as
+      // long as the catalogue had no tiles in it.
+      expect(id).toMatch(/^\d+[a-z]?$/);
     }
   });
 

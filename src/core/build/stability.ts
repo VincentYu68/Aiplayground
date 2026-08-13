@@ -18,7 +18,7 @@
  * support column inserted underneath it.
  */
 
-import { findPart } from '../lego/catalog';
+import { findPart, PART_BY_ID } from '../lego/catalog';
 import { COLOR_BY_LDRAW, deltaE2000 } from '../lego/colors';
 import type { Placement, StabilityIssue, StabilityReport } from '../../types';
 
@@ -368,6 +368,14 @@ function findMerge(
   const p = placements[i];
   const seen = new Set<number>();
   let best: Merge | null = null;
+  // A tile or a slope is chosen for what it looks like, and re-cutting works in
+  // rectangles through `findPart`, which only ever answers with a brick or a
+  // plate. Merging one therefore turned a finished top surface back into studs,
+  // or a ramp back into a step, and dropped the `facing` that said which way it
+  // pointed. Rare -- two tiles and a slope out of sixty-five on the corpus
+  // chair -- but it is silent, and it undoes the part of the model that was
+  // deliberately not a rectangle.
+  if (!isRecuttable(p)) return null;
 
   const neighbours: Array<[number, number]> = [];
   for (let dz = 0; dz < p.d; dz++) {
@@ -384,6 +392,7 @@ function findMerge(
     seen.add(j);
 
     const q = placements[j];
+    if (!isRecuttable(q)) continue;
     if (labels[j] === labels[i]) continue;
     if (q.y !== p.y || q.height !== p.height) continue;
 
@@ -579,6 +588,17 @@ function mergeOverlapping(
   }
 
   return spanned ? out : null;
+}
+
+/**
+ * Can this part be dissolved back into rectangles?
+ *
+ * Only the plain ones. Everything the re-cut produces comes from `findPart`,
+ * which knows footprints and heights and nothing about shape.
+ */
+function isRecuttable(p: Placement): boolean {
+  const def = PART_BY_ID.get(p.partId);
+  return def === undefined || def.shape === 'brick' || def.shape === 'plate';
 }
 
 function makePart(
