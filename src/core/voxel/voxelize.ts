@@ -369,6 +369,11 @@ function flattenShading(columns: ColumnSample[], gridX: number, gridY: number): 
   // Not the maximum: that is the specular highlight, which is not the albedo
   // either and is often nothing like the object's colour.
   const LIT_PERCENTILE = 0.8;
+  // Share of a column's neighbours that must agree on its material before the
+  // correction is applied in full. Interior columns clear this easily; columns
+  // on the silhouette, whose colour is contaminated by the background behind
+  // them, do not.
+  const SUPPORT_FOR_FULL_TRUST = 0.55;
 
   const n = gridX * gridY;
   const cr = new Float32Array(n);
@@ -388,12 +393,19 @@ function flattenShading(columns: ColumnSample[], gridX: number, gridY: number): 
   }
 
   const lit = new Float32Array(n);
+  const litR = new Float32Array(n);
+  const litG = new Float32Array(n);
+  const support = new Float32Array(n);
   const nearby: number[] = [];
   for (let y = 0; y < gridY; y++) {
     for (let x = 0; x < gridX; x++) {
       const i = y * gridX + x;
       if (!columns[i].filled) continue;
       nearby.length = 0;
+      let neighbours = 0;
+      let chromaR = 0;
+      let chromaG = 0;
+      let chromaN = 1e-9;
       for (let dy = -radius; dy <= radius; dy++) {
         const yy = y + dy;
         if (yy < 0 || yy >= gridY) continue;
@@ -402,34 +414,71 @@ function flattenShading(columns: ColumnSample[], gridX: number, gridY: number): 
           if (xx < 0 || xx >= gridX) continue;
           const j = yy * gridX + xx;
           if (!columns[j].filled) continue;
+          neighbours++;
           const dr = cr[j] - cr[i];
           const dg = cg[j] - cg[i];
           if (Math.sqrt(dr * dr + dg * dg) > CHROMA_TOLERANCE) continue;
           nearby.push(intensity[j]);
+          // Weighted toward the brighter samples: a shaded sample's hue has
+          // already drifted, so it should not get an equal say in what the
+          // material's hue is.
+          const w = intensity[j];
+          chromaR += cr[j] * w;
+          chromaG += cg[j] * w;
+          chromaN += w;
         }
       }
       if (nearby.length === 0) {
         lit[i] = intensity[i];
+        litR[i] = cr[i];
+        litG[i] = cg[i];
         continue;
       }
       nearby.sort((m, o) => m - o);
       lit[i] = nearby[Math.min(nearby.length - 1, Math.floor(nearby.length * LIT_PERCENTILE))];
+      support[i] = nearby.length / Math.max(1, neighbours);
+      // The consensus chromaticity of the material, not this column's own.
+      // Shading desaturates a saturated colour as well as darkening it, so an
+      // individual shaded sample's chromaticity is itself unreliable; the
+      // group's is not.
+      litR[i] = chromaR / chromaN;
+      litG[i] = chromaG / chromaN;
     }
   }
 
   for (let i = 0; i < n; i++) {
     if (!columns[i].filled) continue;
+    if (intensity[i] <= 1e-4) continue;
     // Only ever brighten: a column already above its neighbourhood's lit value
     // is the highlight, and dragging it down would invent a shadow.
     const target = Math.max(intensity[i], lit[i]);
-    const scaled = intensity[i] + SHADING_REMOVAL * (target - intensity[i]);
-    if (intensity[i] <= 1e-4) continue;
-    // Rescale intensity while holding chromaticity: the material keeps its
-    // colour and only the light on it changes.
-    const k = scaled / intensity[i];
-    columns[i].r = fromLinear(toLinear(columns[i].r) * k);
-    columns[i].g = fromLinear(toLinear(columns[i].g) * k);
-    columns[i].b = fromLinear(toLinear(columns[i].b) * k);
+    // How much of the neighbourhood agreed this column's material. A column in
+    // the middle of a surface has most of its neighbours behind it; a column on
+    // the silhouette edge averages a partly-covered stud and lands on a
+    // chromaticity that is a blend of the object and whatever is behind it, so
+    // almost nothing agrees with it.
+    //
+    // Brightening those was a visible regression and not a subtle one: a dark
+    // contaminated edge quantises to dark red and disappears, and the same
+    // sample brightened lands on pink or purple and reads as a deliberate
+    // stripe down the side of a red car. Where the neighbourhood does not back
+    // the estimate, the estimate is not acted on.
+    const trust = Math.min(1, support[i] / SUPPORT_FOR_FULL_TRUST);
+    const mix = SHADING_REMOVAL * trust;
+    const scaled = intensity[i] + mix * (target - intensity[i]);
+    // Move the hue toward the material's consensus as well as the brightness.
+    // Rescaling intensity alone was a visible regression: shading desaturates
+    // as well as darkens, so a shaded red's own chromaticity is already brown,
+    // and brightening it without correcting that lands on Medium Nougat --
+    // 14.5% of a red car, in tan, which is far more wrong than the dark red it
+    // replaced.
+    const rr = cr[i] + mix * (litR[i] - cr[i]);
+    const gg = cg[i] + mix * (litG[i] - cg[i]);
+    const bb = Math.max(0, 1 - rr - gg);
+    const sum = rr + gg + bb;
+    columns[i].r = fromLinear((rr / sum) * scaled);
+    columns[i].g = fromLinear((gg / sum) * scaled);
+    columns[i].b = fromLinear((bb / sum) * scaled);
   }
 }
 
@@ -529,10 +578,64 @@ export function voxelize(
     colorTally.set(index, (colorTally.get(index) ?? 0) + 1);
 
     // The far side is only ever a guess, so it is never scored for fidelity.
-    backColor[i] =
-      options.backTreatment === 'mirror'
-        ? index
-        : colorForColumn(rgbToLab(c.wr, c.wg, c.wb), palette, course).index;
+    // 'wrap' is resolved after this loop, once every column has a front
+    // colour to carry round. Sampling it per column from the photo read the
+    // *silhouette edge pixel*, which is an anti-aliased blend of the object and
+    // whatever is behind it: against the corpus car's tan backdrop that blend
+    // quantised to Medium Nougat, and 14.5% of a red car came out tan because
+    // the background had leaked into the model.
+    backColor[i] = index;
+  }
+
+  if (options.backTreatment === 'wrap') {
+    // Carry each column's colour round from the nearest column that is actually
+    // on the outline, found by a breadth-first sweep inward from the silhouette.
+    // The colour is one the model already uses, so the far side can never
+    // introduce a colour the photograph did not contain.
+    const source = new Int32Array(frontMask.length).fill(-1);
+    let frontier: number[] = [];
+    for (let gy = 0; gy < gridY; gy++) {
+      for (let gx = 0; gx < gridX; gx++) {
+        const i = gy * gridX + gx;
+        if (!frontMask[i]) continue;
+        const edge =
+          gx === 0 ||
+          gy === 0 ||
+          gx === gridX - 1 ||
+          gy === gridY - 1 ||
+          !frontMask[i - 1] ||
+          !frontMask[i + 1] ||
+          !frontMask[i - gridX] ||
+          !frontMask[i + gridX];
+        if (edge) {
+          source[i] = i;
+          frontier.push(i);
+        }
+      }
+    }
+    while (frontier.length > 0) {
+      const next: number[] = [];
+      for (const i of frontier) {
+        const gx = i % gridX;
+        const gy = (i - gx) / gridX;
+        for (const [nx, ny] of [
+          [gx - 1, gy],
+          [gx + 1, gy],
+          [gx, gy - 1],
+          [gx, gy + 1],
+        ]) {
+          if (nx < 0 || ny < 0 || nx >= gridX || ny >= gridY) continue;
+          const j = ny * gridX + nx;
+          if (!frontMask[j] || source[j] >= 0) continue;
+          source[j] = source[i];
+          next.push(j);
+        }
+      }
+      frontier = next;
+    }
+    for (let i = 0; i < frontMask.length; i++) {
+      if (frontMask[i] && source[i] >= 0) backColor[i] = frontColor[source[i]];
+    }
   }
 
   if (options.backTreatment === 'flat') {
